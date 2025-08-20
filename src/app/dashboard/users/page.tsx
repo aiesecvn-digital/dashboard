@@ -787,10 +787,10 @@ function AdminUtm() {
   if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-6">Loading UTM settings...</div>;
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-6">
-      <div className="flex items-center justify-between mb-4">
+    <div className="bg-white rounded-lg border border-gray-200 p-3 sm:p-4 md:p-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
         <h3 className="text-lg font-semibold text-gray-900">UTM Links</h3>
-        <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50">Save</button>
+        <button onClick={handleSave} disabled={saving} className="px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 text-sm">Save</button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-gray-900 text-sm">
@@ -815,13 +815,13 @@ function AdminUtm() {
                   </td>
                   <td className="py-2 px-2">
                     <div className="space-y-2">
-                      {(r.links.length === 0 ? [''] : r.links).map((link: string, j: number) => (
-                        <div key={j} className="flex items-center gap-2">
-                          <input type="text" placeholder="https://..." className="w-96 border border-gray-300 rounded-md px-2 py-1" value={link} onChange={(e)=>handleLinkChange(idx, j, e.target.value)} />
-                          <button onClick={()=>handleRemoveLink(idx, j)} className="px-2 py-1 text-sm text-red-600 hover:text-red-700">Remove</button>
-                        </div>
-                      ))}
-                      <button onClick={()=>handleAddLink(idx)} className="px-2 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200">Add link</button>
+                                             {(r.links.length === 0 ? [''] : r.links).map((link: string, j: number) => (
+                         <div key={j} className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                           <input type="text" placeholder="https://..." className="w-full sm:w-96 border border-gray-300 rounded-md px-2 py-1 text-sm" value={link} onChange={(e)=>handleLinkChange(idx, j, e.target.value)} />
+                           <button onClick={()=>handleRemoveLink(idx, j)} className="px-2 py-1 text-sm text-red-600 hover:text-red-700 whitespace-nowrap">Remove</button>
+                         </div>
+                       ))}
+                       <button onClick={()=>handleAddLink(idx)} className="px-2 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200">Add link</button>
                     </div>
                   </td>
                 </tr>
