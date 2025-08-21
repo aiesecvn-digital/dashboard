@@ -1,13 +1,14 @@
 import type { NextConfig } from "next";
 
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  output: "export",   // Bắt buộc để export static
+const nextConfig: NextConfig = {
+  output: 'export',
+  trailingSlash: true,
   images: {
-    unoptimized: true // Nếu có dùng <Image />, bắt buộc để tránh lỗi
+    unoptimized: true
   },
-  basePath: "/dashboard", 
-  assetPrefix: "/dashboard/",
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
 };
 
-module.exports = nextConfig;
+export default nextConfig;

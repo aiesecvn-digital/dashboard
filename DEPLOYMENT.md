@@ -40,6 +40,20 @@ NEXT_PUBLIC_APP_URL=https://your-domain.com
 
 ## Deployment Platforms
 
+### Cloudflare Pages (Recommended)
+1. Push code to GitHub repository
+2. Go to [Cloudflare Dashboard](https://dash.cloudflare.com/)
+3. Click "Pages" → "Create a project"
+4. Connect your GitHub repository
+5. Build settings:
+   - Framework preset: "Next.js"
+   - Build command: `npm run build`
+   - Build output directory: `out`
+6. Add environment variables:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+7. Deploy automatically
+
 ### GitHub Pages (Static Export)
 1. Push code to GitHub repository
 2. Add environment variables as GitHub Secrets:
