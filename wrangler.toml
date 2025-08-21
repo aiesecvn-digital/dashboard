@@ -1,0 +1,11 @@
+name = "web-tracking-dashboard"
+compatibility_date = "2025-08-21"
+
+[site]
+bucket = "./out"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[env.preview]
+vars = { ENVIRONMENT = "preview" }
