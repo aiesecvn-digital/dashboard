@@ -59,9 +59,69 @@ export default function AnalyticsPage() {
   const [phaseFilter, setPhaseFilter] = useState<string>('');
   const [phaseRanges, setPhaseRanges] = useState<Array<{ code: string; start: string | null; end: string | null }>>([]);
   const [phasesMeta, setPhasesMeta] = useState<Array<{ code: string; term: number; half: number; start: string | null; end: string | null }>>([]);
+  const [utmLinksByLc, setUtmLinksByLc] = useState<Record<string, string[]>>({});
 
   // Available LCs
   const availableLCs = ['FHN', 'Hanoi', 'NEU', 'Danang', 'FHCMC', 'HCMC', 'HCME', 'HCMS', 'Cantho'];
+
+  // Year of study columns mapping
+  const yearColumns = [
+    'Năm 1',
+    'Năm 2',
+    'Năm 3',
+    'Năm 4/Năm 5/Năm 6/Khác',
+    'Mới tốt nghiệp dưới 6 tháng',
+    'Tốt nghiệp trên 1 năm',
+    'Tốt nghiệp từ 6 tháng đến 1 năm',
+    'Gap year',
+    'Đang học Cao học (Thạc sĩ)'
+  ];
+
+
+  const buildYearOfStudyMatrix = () => {
+    // Row labels: all LCs + special allocated_lc labels that appear (e.g., EMT, Organic, EST)
+    const rowsSet = new Set<string>(availableLCs);
+    filteredSubmissions.forEach(s => { if (s.allocated_lc) rowsSet.add(String(s.allocated_lc)); });
+    const rows = Array.from(rowsSet);
+
+    // Init matrix
+    const data: Record<string, Record<string, number>> = {};
+    rows.forEach(r => { data[r] = {}; yearColumns.forEach(c => data[r][c] = 0); });
+
+    filteredSubmissions.forEach(sub => {
+      if (!belongsToSelected(sub)) return;
+      const lc = sub.allocated_lc || 'Unknown';
+      const form = sub.form_data || {};
+      const yos = form.year_of_study ?? form.yearOfStudy ?? form.UniversityYear ?? sub.UniversityYear ?? form['University Year'] ?? form.university_year;
+      if (!data[lc]) { data[lc] = {}; yearColumns.forEach(c => data[lc][c] = 0); }
+      if (!yearColumns.includes(yos)) return;
+      data[lc][yos] = (data[lc][yos] || 0) + 1;
+    });
+
+    // Totals and max for heat
+    let maxCell = 0;
+    rows.forEach(r => yearColumns.forEach(c => { maxCell = Math.max(maxCell, data[r]?.[c] || 0); }));
+
+    const colTotals: Record<string, number> = {};
+    yearColumns.forEach(c => { colTotals[c] = rows.reduce((s, r) => s + (data[r]?.[c] || 0), 0); });
+    const rowTotals: Record<string, number> = {};
+    rows.forEach(r => { rowTotals[r] = yearColumns.reduce((s, c) => s + (data[r]?.[c] || 0), 0); });
+    const grandTotal = Object.values(colTotals).reduce((a,b)=>a+b,0);
+
+    return { rows, columns: yearColumns, data, colTotals, rowTotals, maxCell, grandTotal };
+  };
+
+  const heatColor = (value: number, max: number): string => {
+    if (max <= 0) return '#ffffff';
+    const t = Math.min(1, value / max);
+    // Interpolate from very light green to saturated green
+    const start = { r: 232, g: 245, b: 232 }; // #e8f5e8
+    const end = { r: 0, g: 193, b: 110 };     // #00c16e
+    const r = Math.round(start.r + (end.r - start.r) * t);
+    const g = Math.round(start.g + (end.g - start.g) * t);
+    const b = Math.round(start.b + (end.b - start.b) * t);
+    return `rgb(${r}, ${g}, ${b})`;
+  };
 
   useEffect(() => {
     checkUser();
@@ -77,6 +137,7 @@ export default function AnalyticsPage() {
 
       setUser(currentUser);
       await loadData();
+      await loadUtmLinks();
       
       try {
         const { data: phases } = await supabase
@@ -94,6 +155,27 @@ export default function AnalyticsPage() {
       setLoading(false);
 		}
 	};
+
+  const loadUtmLinks = async () => {
+    try {
+      const { data: utmLinks, error } = await supabase.from('utm_links').select('*');
+      if (error) throw error;
+      const linksByLc: Record<string, string[]> = {};
+      (utmLinks || []).forEach((link: any) => {
+        const lcCode = link.entity_code || link.lc_code || link.lc || link.local_committee || link.entity;
+        const utmLink = link.url || link.utm_link || link.utm || link.link;
+        if (lcCode && utmLink) {
+          const key = String(lcCode);
+          if (!linksByLc[key]) linksByLc[key] = [];
+          linksByLc[key].push(String(utmLink));
+        }
+      });
+      setUtmLinksByLc(linksByLc);
+    } catch (e) {
+      console.error('Error loading UTM links:', e);
+      setUtmLinksByLc({});
+    }
+  };
 
 	const loadData = async () => {
 		try {
@@ -127,21 +209,42 @@ export default function AnalyticsPage() {
 		}
 	};
 
+  const getVal = (obj: any, keys: string[]): any => {
+    for (const k of keys) {
+      const v = obj?.[k];
+      if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+    }
+    return '';
+  };
+
+  const getUtmTerm = (s: any): string => {
+    const form = s?.form_data || {};
+    return (
+      getVal(form, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) ||
+      getVal(s, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) ||
+      ''
+    ).toString();
+  };
+
+  const belongsToSelected = (s: any): boolean => {
+    if (selectedLC === 'Organic') {
+      return !s.allocated_lc || s.allocated_lc === 'Organic';
+    }
+    if (selectedLC === 'EMT' || selectedLC === 'EST') {
+      const utmTerm = getUtmTerm(s);
+      const links = utmLinksByLc[selectedLC] || [];
+      return !!utmTerm && links.some(l => utmTerm.toLowerCase().includes(String(l).toLowerCase()));
+    }
+    return s.allocated_lc === selectedLC;
+  };
+
   // Apply filters
   useEffect(() => {
     if (!allSubmissions || allSubmissions.length === 0) return;
 
-    const getVal = (obj: any, keys: string[]): any => {
-      for (const k of keys) {
-        const v = obj?.[k];
-        if (v !== undefined && v !== null && String(v).trim() !== '') return v;
-      }
-      return '';
-    };
-
     const matchesMonth = (s: any) => {
-    if (!monthFilter) return true;
-    try {
+      if (!monthFilter) return true;
+      try {
         const date = new Date(s.timestamp);
         const month = date.getUTCMonth() + 1;
         const year = date.getUTCFullYear();
@@ -151,34 +254,34 @@ export default function AnalyticsPage() {
     };
 
     const matchesTerm = (s: any) => {
-    if (!termFilter) return true;
-    try {
+      if (!termFilter) return true;
+      try {
         const y = new Date(s.timestamp).getUTCFullYear();
-      const set = new Set(termFilter.split(',').filter(Boolean));
+        const set = new Set(termFilter.split(',').filter(Boolean));
         return set.has(String(y));
       } catch { return true; }
     };
 
     const matchesPhase = (s: any) => {
-    if (!phaseFilter) return true;
+      if (!phaseFilter) return true;
       const codes = new Set(phaseFilter.split(',').filter(Boolean));
       return phaseRanges.some(range => {
         if (!codes.has(range.code) || !range.start || !range.end) return false;
-    const t = new Date(s.timestamp).getTime();
+        const t = new Date(s.timestamp).getTime();
         return t >= new Date(range.start).getTime() && t <= new Date(range.end).getTime();
-    });
-  };
+      });
+    };
 
     const filtered = allSubmissions.filter((s: any) => 
-      matchesMonth(s) && matchesTerm(s) && matchesPhase(s)
+      matchesMonth(s) && matchesTerm(s) && matchesPhase(s) && belongsToSelected(s)
     );
 
     setFilteredSubmissions(filtered);
-  }, [allSubmissions, monthFilter, termFilter, phaseFilter, phaseRanges]);
+  }, [allSubmissions, monthFilter, termFilter, phaseFilter, phaseRanges, selectedLC, utmLinksByLc]);
 
   // Get university statistics for selected LC
   const getUniversityStats = (): UniversityStats[] => {
-    const lcSubmissions = filteredSubmissions.filter(s => s.allocated_lc === selectedLC);
+    const lcSubmissions = filteredSubmissions.filter(s => belongsToSelected(s));
     const universityMap = new Map<string, number>();
 
     lcSubmissions.forEach(submission => {
@@ -198,9 +301,8 @@ export default function AnalyticsPage() {
 
   // Get year of study statistics
   const getYearOfStudyStats = (): YearOfStudyStats[] => {
-    let submissions = filteredSubmissions.filter(s => s.allocated_lc === selectedLC);
+    let submissions = filteredSubmissions.filter(s => belongsToSelected(s));
     
-    // Filter by selected university if not 'all'
     if (selectedUniversity !== 'all') {
       submissions = submissions.filter(s => 
         (s.university || s.uni) === selectedUniversity
@@ -210,7 +312,6 @@ export default function AnalyticsPage() {
     const yearMap = new Map<string, number>();
 
     submissions.forEach(submission => {
-      // Extract year of study from multiple possible sources
       const formData = submission.form_data || {};
       const yearOfStudy = 
         formData.year_of_study || 
@@ -219,12 +320,9 @@ export default function AnalyticsPage() {
         submission.UniversityYear ||
         formData['University Year'] ||
         formData.university_year ||
-        'Unknown';
-      
-      // Clean up the year value
+        'Năm 4/Năm 5/Năm 6/Khác';
       const cleanYear = String(yearOfStudy).trim();
-      const finalYear = cleanYear || 'Unknown';
-      
+      const finalYear = cleanYear || 'Năm 4/Năm 5/Năm 6/Khác';
       yearMap.set(finalYear, (yearMap.get(finalYear) || 0) + 1);
     });
 
@@ -240,14 +338,12 @@ export default function AnalyticsPage() {
 
   // Get available universities for the selected LC
   const getAvailableUniversities = (): string[] => {
-    const lcSubmissions = filteredSubmissions.filter(s => s.allocated_lc === selectedLC);
+    const lcSubmissions = filteredSubmissions.filter(s => belongsToSelected(s));
     const universities = new Set<string>();
-    
     lcSubmissions.forEach(submission => {
       const university = submission.university || submission.uni;
       if (university) universities.add(university);
     });
-
     return Array.from(universities).sort();
   };
 
@@ -434,22 +530,63 @@ export default function AnalyticsPage() {
                   <div key={stat.yearOfStudy} className="flex items-center space-x-2 sm:space-x-4">
                     <div className="w-32 sm:w-48 text-sm font-medium text-gray-900">
                       {stat.yearOfStudy}
-                           </div>
+                    </div>
                     <div className="flex-1">
                       <div className="bg-gray-100 rounded-full h-6 relative">
                         <div 
                           className="bg-primary rounded-full h-6 transition-all duration-500"
                           style={{ width: `${stat.percentage}%` }}
                         ></div>
-                           </div>
-                           </div>
+                      </div>
+                    </div>
                     <div className="w-20 sm:w-24 text-sm font-medium text-gray-900 text-right">
                       {formatNumber(stat.count)} ({stat.percentage.toFixed(1)}%)
-                           </div>
-                           </div>
+                    </div>
+                  </div>
                 ))}
-               </div>
-             )}
+
+                {/* Heatmap table */}
+                <div className="overflow-x-auto mt-6">
+                  {(() => {
+                    const { rows, columns, data, colTotals, rowTotals, maxCell, grandTotal } = buildYearOfStudyMatrix();
+                    return (
+                      <table className="w-full text-sm border-collapse">
+                        <thead>
+                          <tr>
+                            <th className="text-left py-2 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>LC</th>
+                            {columns.map(col => (
+                              <th key={col} className="text-center py-2 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((lc, idx) => (
+                            <tr key={lc} className={`${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                              <td className="py-2 px-3 font-medium" style={{ backgroundColor: '#f0f0f0' }}>{lc}</td>
+                              {columns.map(col => {
+                                const val = data[lc]?.[col] || 0;
+                                return (
+                                  <td key={`${lc}-${col}`} className="py-2 px-3 text-center" style={{ backgroundColor: heatColor(val, maxCell), color: val > maxCell * 0.6 ? '#ffffff' : '#000000' }}>
+                                    {formatNumber(val)}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                          {/* Row totals */}
+                          <tr>
+                            <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>TOTAL</td>
+                            {columns.map(col => (
+                              <td key={`total-${col}`} className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#ffc845', color: '#000000' }}>{formatNumber(colTotals[col] || 0)}</td>
+                            ))}
+                          </tr>
+                        </tbody>
+                      </table>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
 
             {/* Pie Chart */}
             <div className="border-t pt-6">

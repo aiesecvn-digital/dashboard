@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { BarChart3, TrendingUp, Users, Settings, X, Menu, FileText } from 'lucide-react';
+import { BarChart3, TrendingUp, Users, Settings, X, Menu, FileText, LogOut } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { useRouter } from 'next/navigation';
+import { signOut } from '@/lib/supabase';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -25,15 +26,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     };
   }, []);
 
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+      router.push('/auth/login');
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
+  };
+
   return (
     <div className="min-h-screen relative">
-              {/* Sidebar */}
-        <aside
-          className={`fixed inset-y-0 left-0 z-50 w-64 sm:w-72 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out ${
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-          }`}
-          aria-hidden={!sidebarOpen}
-        >
+      {/* Sidebar */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-64 sm:w-72 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+        aria-hidden={!sidebarOpen}
+      >
         <div className="flex flex-col h-full">
           <div className="flex items-center justify-between p-3 sm:p-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-900 truncate">Navigation</h2>
@@ -113,11 +123,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
             </div>
           </nav>
+          <div className="mt-auto p-3 border-t border-gray-200">
+            <button
+              onClick={handleSignOut}
+              className="w-full flex items-center px-4 sm:px-6 py-2 text-sm rounded-md transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              <LogOut className="mr-2 h-4 w-4 flex-shrink-0" />
+              <span className="truncate">Sign Out</span>
+            </button>
+          </div>
         </div>
       </aside>
 
-              {/* Content wrapper shifts when sidebar open */}
-        <div className={`transition-all duration-300 ${sidebarOpen ? 'pl-64 sm:pl-72' : 'pl-0'}`}>
+      {/* Content wrapper shifts when sidebar open */}
+      <div className={`transition-all duration-300 ${sidebarOpen ? 'pl-64 sm:pl-72' : 'pl-0'}`}>
         {children}
       </div>
 

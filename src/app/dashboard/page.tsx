@@ -52,6 +52,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [lcStats, setLcStats] = useState<LCStats[]>([]);
   const [lcGoals, setLcGoals] = useState<Record<string, number>>({});
   const [totalStats, setTotalStats] = useState({
@@ -75,6 +76,11 @@ export default function DashboardPage() {
   const [displayedTotals, setDisplayedTotals] = useState({ totalForms: 0, totalYE: 0, totalAPD: 0, totalRE: 0 });
   const [utmLinksByLc, setUtmLinksByLc] = useState<Record<string, string[]>>({});
   const [universityMap, setUniversityMap] = useState<Map<string, string>>(new Map());
+  const [summarySort, setSummarySort] = useState<{ column: 'msu' | 'total' | null; direction: 'asc' | 'desc' }>({ column: null, direction: 'desc' });
+  const [comparePhaseFilter, setComparePhaseFilter] = useState<string>('');
+  const [compareMsuByPhase, setCompareMsuByPhase] = useState<Record<string, Record<string, number>>>({});
+  const [compareTotalsByPhase, setCompareTotalsByPhase] = useState<Record<string, number>>({});
+  const [compareLoading, setCompareLoading] = useState<boolean>(false);
 
   // Helper functions for calculations
   const calculateProgress = (total: number, goal: number) => {
@@ -97,6 +103,24 @@ export default function DashboardPage() {
   useEffect(() => {
     checkUser();
   }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      if (!target.closest('.profile-dropdown')) {
+        setProfileDropdownOpen(false);
+      }
+    };
+
+    if (profileDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [profileDropdownOpen]);
 
   // Load UTM links when component mounts
   useEffect(() => {
@@ -231,7 +255,7 @@ export default function DashboardPage() {
       };
 
       const filtered = allSubmissionsState.filter((s:any) => matchesTerm(s) && matchesPhase(s));
-      
+
       filtered.forEach((submission: any) => {
         let lc = submission.allocated_lc || 'Organic';
         
@@ -343,7 +367,7 @@ export default function DashboardPage() {
     ;
       
       setLcGoals(goalsByLc);
-
+      
       // Wait a bit to ensure goals are properly set before calculating summary
       await new Promise(resolve => setTimeout(resolve, 100));
     })();
@@ -806,6 +830,98 @@ export default function DashboardPage() {
     return new Intl.NumberFormat('en-US').format(num);
   };
 
+  const toggleSummarySort = (column: 'msu' | 'total') => {
+    setSummarySort(prev => {
+      if (prev.column === column) {
+        return { column, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+      }
+      return { column, direction: 'desc' };
+    });
+  };
+
+  const sortedLocalSummary = (() => {
+    if (!summarySort.column) return localSummary;
+    const arr = [...localSummary];
+    arr.sort((a, b) => {
+      const valA = summarySort.column === 'msu' ? a.msu : a.total;
+      const valB = summarySort.column === 'msu' ? b.msu : b.total;
+      const diff = valA - valB;
+      return summarySort.direction === 'asc' ? diff : -diff;
+    });
+    return arr;
+  })();
+
+  // Fetch comparison MSUs when compare phase changes
+  useEffect(() => {
+    const loadCompare = async () => {
+      if (!comparePhaseFilter) return;
+      // Exclude if compare phase is also in current phaseFilter
+      const currentPhases = new Set(phaseFilter.split(',').filter(Boolean));
+      if (currentPhases.has(comparePhaseFilter)) return;
+
+      try {
+        setCompareLoading(true);
+        // Fetch submissions within the compare phase's date range
+        const range = phaseRanges.find(p => p.code === comparePhaseFilter);
+        if (!range || !range.start || !range.end) { setCompareLoading(false); return; }
+
+        let from = 0;
+        const pageSize = 1000;
+        let hasMore = true;
+        let compareSubs: any[] = [];
+        while (hasMore) {
+          const { data: page, error } = await supabase
+            .from('form_submissions')
+            .select('*')
+            .gte('timestamp', range.start)
+            .lte('timestamp', range.end)
+            .order('timestamp', { ascending: false })
+            .range(from, from + pageSize - 1);
+          if (error) throw error;
+          if (page && page.length > 0) {
+            compareSubs = compareSubs.concat(page);
+            from += pageSize;
+            hasMore = page.length === pageSize;
+          } else {
+            hasMore = false;
+          }
+        }
+
+        // Compute MSU per LC using registered UTM term matching
+        const msuByLc: Record<string, number> = {};
+        const totalCount = compareSubs.length;
+        const getVal = (obj: any, keys: string[]): any => {
+          for (const k of keys) {
+            const v = obj?.[k];
+            if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+          }
+          return '';
+        };
+
+        compareSubs.forEach(submission => {
+          const formData = submission.form_data || {};
+          const utmTerm = getVal(formData, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) || 
+                          getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
+          if (utmTerm) {
+            Object.entries(utmLinksByLc).forEach(([lcCode, links]) => {
+              const isMatchingUtm = links.some(link => String(utmTerm).toLowerCase().includes(String(link).toLowerCase()));
+              if (isMatchingUtm) msuByLc[lcCode] = (msuByLc[lcCode] || 0) + 1;
+            });
+          }
+        });
+
+        setCompareMsuByPhase(prev => ({ ...prev, [comparePhaseFilter]: msuByLc }));
+        setCompareTotalsByPhase(prev => ({ ...prev, [comparePhaseFilter]: totalCount }));
+      } catch (e) {
+        console.error('Error loading compare phase data', e);
+      } finally {
+        setCompareLoading(false);
+      }
+    };
+
+    loadCompare();
+  }, [comparePhaseFilter, phaseRanges, utmLinksByLc, phaseFilter]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-cover bg-center bg-no-repeat" style={{ backgroundImage: 'url(/bg.png)' }}>
@@ -842,12 +958,40 @@ export default function DashboardPage() {
               <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full"></span>
             </button>
             <div className="flex items-center space-x-2">
+              <div className="relative profile-dropdown">
+                <button 
+                  onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
+                  className="flex items-center space-x-2 p-2 rounded-md hover:bg-gray-100 transition-colors"
+                >
               <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
                 <User className="h-4 w-4 text-gray-600" />
               </div>
               <span className="hidden lg:block text-sm font-medium text-gray-700 truncate max-w-32">
                 {user?.email}
               </span>
+                  <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                
+                {profileDropdownOpen && (
+                  <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg border border-gray-200 z-50">
+                    <div className="py-1">
+                      <div className="px-4 py-2 text-sm text-gray-700 border-b border-gray-100">
+                        <div className="font-medium">{user?.email}</div>
+                        <div className="text-xs text-gray-500">Signed in</div>
+                      </div>
+                      <button
+                        onClick={handleSignOut}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center space-x-2"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        <span>Sign Out</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -980,7 +1124,7 @@ export default function DashboardPage() {
                       <th className="text-left py-3 px-4" style={{ backgroundColor: '#037EF3', color: 'white' }}>Total</th>
                     </tr>
                   </thead>
-                  <tbody>
+                                     <tbody>
                                          {lcStats.map((stat, index) => {
                        const getRankIcon = (rank: number) => {
                          if (rank === 1) return '🥇';
@@ -1008,11 +1152,11 @@ export default function DashboardPage() {
                            <td className="py-3 px-4">{formatNumber(stat.apd_count)}</td>
                            <td className="py-3 px-4">{formatNumber(stat.re_count)}</td>
                            <td className="py-3 px-4 font-semibold" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{formatNumber(stat.total_forms)}</td>
-                         </tr>
+                      </tr>
                        );
                      })}
                     {/* Total Row */}
-                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #FFFFFF' }}>
                       <td className="py-3 px-4 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>TOTAL</td>
                       <td className="py-3 px-4 font-bold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{formatNumber(Object.values(lcGoals).reduce((a, b) => a + b, 0))}</td>
                       <td className="py-3 px-4 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>{formatNumber(totalStats.totalYE)}</td>
@@ -1052,7 +1196,7 @@ export default function DashboardPage() {
                       </tr>
                     ))}
                     {/* Total Row */}
-                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #FFFFFF' }}>
                       <td className="py-2 px-3 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>TOTAL</td>
                       <td className="py-2 px-3 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>{formatNumber(totalStats.totalForms)}</td>
                       <td className="py-2 px-3 font-bold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{formatNumber(Object.values(lcGoals).reduce((a, b) => a + b, 0))}</td>
@@ -1084,7 +1228,7 @@ export default function DashboardPage() {
                       </tr>
                     ))}
                     {/* Total Row */}
-                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #FFFFFF' }}>
                       <td className="py-2 px-3 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>TOTAL</td>
                       <td className="py-2 px-3 font-bold" style={{ backgroundColor: '#ffc845', color: '#000000' }}>{formatNumber(nationalTotal)}</td>
                     </tr>
@@ -1097,31 +1241,58 @@ export default function DashboardPage() {
           </div>
 
           {/* Signup Summary Matrix */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Signup Summary</h3>
+            <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
+              <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">Signup Summary</h3>
+              <div className="flex items-center space-x-2">
+                <label className="text-sm text-gray-700">Compare with</label>
+                <select
+                  className="border border-gray-300 rounded-md px-2 py-1 text-sm"
+                  value={comparePhaseFilter}
+                  onChange={(e) => setComparePhaseFilter(e.target.value)}
+                >
+                  <option value="">None</option>
+                  {phasesMeta
+                    .map(p => p.code)
+                    .filter(code => code && !new Set(phaseFilter.split(',').filter(Boolean)).has(code))
+                    .map(code => (
+                      <option key={code} value={code}>{code}</option>
+                    ))}
+                </select>
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-gray-900 text-sm border-collapse">
                 <thead>
                   <tr>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>Type</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>Entity</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#00c16e', color: 'white' }}>Goal</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ các nguồn">SUs | market (total)</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ UTM Links cho own market">MSUs</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ UTM Links cho mọi market">SUs | utm source</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs nhận được từ EMT + Organic">EMT + Organic</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>SUs | other source</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#00c16e', color: 'white' }} title="Progress = SUs / Goal">Progress</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#7552CC', color: 'white' }} title="%M.SUs/SUs = MSUs / SUs">%M.SUs/SUs</th>
-                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#FF6B6B', color: 'white' }} title="%M.SUs/UTM = MSUs / SUs | utm source">%M.SUs/UTM</th>
+                    <th rowSpan={2} className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>Type</th>
+                    <th rowSpan={2} className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>Entity</th>
+                    <th rowSpan={2} className="text-center py-3 px-3" style={{ backgroundColor: '#00c16e', color: 'white' }}>Goal</th>
+                    <th rowSpan={2} className="text-center py-3 px-3 cursor-pointer select-none" onClick={() => toggleSummarySort('total')} style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ các nguồn">SUs | market (total){summarySort.column==='total' ? (summarySort.direction==='asc' ? ' ▲' : ' ▼') : ''}</th>
+                    <th rowSpan={2} className="text-center py-3 px-3 cursor-pointer select-none" onClick={() => toggleSummarySort('msu')} style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ UTM Links cho own market">MSUs{summarySort.column==='msu' ? (summarySort.direction==='asc' ? ' ▲' : ' ▼') : ''}</th>
+                    <th rowSpan={2} className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ UTM Links cho mọi market">SUs | utm source</th>
+                    <th rowSpan={2} className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs nhận được từ EMT + Organic">EMT + Organic</th>
+                    <th rowSpan={2} className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>SUs | other source</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} colSpan={comparePhaseFilter ? 7 : 5}>%GvA{comparePhaseFilter ? ` compared to ${comparePhaseFilter}` : ''}</th>
+                  </tr>
+                  <tr>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white', borderLeft: '1px solid white', borderTop: '1px solid white', borderRight: '1px solid white'}} title="Progress = SUs / Goal">Progress</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white', borderLeft: '1px solid white', borderTop: '1px solid white', borderRight: '1px solid white'}} title="%M.SUs/SUs = MSUs / SUs">%M.SUs/SUs</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white', borderLeft: '1px solid white', borderTop: '1px solid white' }} title="%M.SUs/UTM = MSUs / SUs | utm source">%M.SUs/UTM</th>
+                    {comparePhaseFilter && (
+                      <>
+                        <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white', borderLeft: '1px solid white', borderTop: '1px solid white', borderRight: '1px solid white' }} title={`MSU at ${comparePhaseFilter}`}>MSU ({comparePhaseFilter})</th>
+                        <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white', borderLeft: '1px solid white', borderTop: '1px solid white' }} title="%Growth = (MSU current - MSU compare) / MSU compare">%Growth</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                                    {/* Local section */}
-                  {localSummary.map((row, index) => (
+                  {/* Local section */}
+                  {sortedLocalSummary.map((row, index) => (
                     <tr key={`sum-${row.lc}`} className={`border-b border-gray-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       {index === 0 && (
-                        <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#037EF3', color: 'white', writingMode: 'vertical-rl', textOrientation: 'mixed', transform: 'rotate(180deg)' }} rowSpan={localSummary.length}>LOCAL</td>
+                        <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#037EF3', color: 'white', writingMode: 'vertical-rl', textOrientation: 'mixed', transform: 'rotate(180deg)' }} rowSpan={sortedLocalSummary.length}>LOCAL</td>
                       )}
                       <td className="py-2 px-3 font-medium text-gray-900">{row.lc}</td>
                       <td className="py-2 px-3 font-semibold text-center" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{row.goal}</td>
@@ -1133,10 +1304,33 @@ export default function DashboardPage() {
                       <td className="py-2 px-3 text-center font-semibold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{calculateProgress(row.total, row.goal).toFixed(2)}%</td>
                       <td className="py-2 px-3 text-center font-semibold" style={{ backgroundColor: '#f0f0ff', color: '#7552CC' }}>{calculatePercentage(row.msu, row.total).toFixed(2)}%</td>
                       <td className="py-2 px-3 text-center font-semibold" style={{ backgroundColor: '#ffe6e6', color: '#FF6B6B' }}>{calculatePercentage(row.msu, row.yourUtm).toFixed(2)}%</td>
+                      {comparePhaseFilter && (
+                        <>
+                          <td className="py-2 px-3 text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>
+                            {compareLoading ? (
+                              <img src="/giphy3.gif" alt="Loading..." className="h-5 inline-block" />
+                            ) : (
+                              formatNumber((compareMsuByPhase[comparePhaseFilter]?.[row.lc] || 0))
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-center font-semibold" style={{ backgroundColor: '#fff0d6' }}>
+                            {compareLoading ? (
+                              <img src="/giphy3.gif" alt="Loading..." className="h-5 inline-block" />
+                            ) : (
+                              (() => {
+                                const prev = compareMsuByPhase[comparePhaseFilter]?.[row.lc] || 0;
+                                if (prev === 0) return '-';
+                                const growth = ((row.msu - prev) / prev) * 100;
+                                return <span style={{ color: growth < 0 ? '#E02424' : '#b36b00' }}>{growth.toFixed(2)}%</span>;
+                              })()
+                            )}
+                          </td>
+                        </>
+                      )}
                     </tr>
                   ))}
                   {localTotals && (
-                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #FFFFFF' }}>
                       <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#ffc845', color: '#000000' }}>TOTAL</td>
                       <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>LOCAL</td>
                       <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{localTotals.goal}</td>
@@ -1148,6 +1342,21 @@ export default function DashboardPage() {
                       <td className="py-2 px-3 font-bold text-center font-semibold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{calculateProgress(localTotals.total, localTotals.goal).toFixed(2)}%</td>
                       <td className="py-2 px-3 font-bold text-center font-semibold" style={{ backgroundColor: '#f0f0ff', color: '#7552CC' }}>{calculatePercentage(localTotals.msu, localTotals.total).toFixed(2)}%</td>
                       <td className="py-2 px-3 font-bold text-center font-semibold" style={{ backgroundColor: '#ffe6e6', color: '#FF6B6B' }}>{calculatePercentage(localTotals.msu, localTotals.yourUtm).toFixed(2)}%</td>
+                      {comparePhaseFilter && (
+                        <>
+                          <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>
+                            {formatNumber(Object.values(compareMsuByPhase[comparePhaseFilter] || {}).reduce((s, v) => s + (v || 0), 0))}
+                          </td>
+                          <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#fff0d6' }}>
+                            {(() => {
+                              const prevTotal = Object.values(compareMsuByPhase[comparePhaseFilter] || {}).reduce((s, v) => s + (v || 0), 0);
+                              if (prevTotal === 0) return '-';
+                              const growth = (((localTotals.msu || 0) - prevTotal) / prevTotal) * 100;
+                              return <span style={{ color: growth < 0 ? '#E02424' : '#b36b00' }}>{growth.toFixed(2)}%</span>;
+                            })()}
+                          </td>
+                        </>
+                      )}
                     </tr>
                   )}
                   {/* National section */}
@@ -1162,7 +1371,7 @@ export default function DashboardPage() {
                          r.label === 'Organic' ? formatNumber(lcGoals['Organic'] ?? 0) : '-'}
                       </td>
                       <td className="py-2 px-3 text-center">{formatNumber(r.count)}</td>
-                      <td className="py-2 px-3 text-center">-</td>
+                      <td className="py-2 px-3 text-center">{calculatePercentage(r.count, nationalTotal + organicTotal).toFixed(2)}%</td>
                       <td className="py-2 px-3 text-center">-</td>
                       <td className="py-2 px-3 text-center">-</td>
                       <td className="py-2 px-3 text-center">-</td>
@@ -1171,12 +1380,12 @@ export default function DashboardPage() {
                       <td className="py-2 px-3 text-center">-</td>
                     </tr>
                   ))}
-                                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #FFFFFF' }}>
                     <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#ffc845', color: '#000000' }}>TOTAL</td>
                     <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>NATIONAL</td>
                     <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{formatNumber((lcGoals['EMT'] ?? 0) + (lcGoals['Organic'] ?? 0))}</td>
                     <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#ffc845', color: '#000000' }}>{formatNumber(nationalTotal + organicTotal)}</td>
-                    <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>-</td>
+                    <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>100.00%</td>
                     <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>-</td>
                     <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>-</td>
                     <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>-</td>
