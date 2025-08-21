@@ -1,15 +1,13 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  output: 'export',
-  trailingSlash: true,
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: "export",   // Bắt buộc để export static
   images: {
-    unoptimized: true
+    unoptimized: true // Nếu có dùng <Image />, bắt buộc để tránh lỗi
   },
-  basePath: process.env.NODE_ENV === 'production' ? '/web-tracking-dashboard' : '',
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
+  basePath: "/dashboard", 
+  assetPrefix: "/dashboard/",
 };
 
-export default nextConfig;
+module.exports = nextConfig;
