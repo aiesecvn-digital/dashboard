@@ -76,6 +76,24 @@ export default function DashboardPage() {
   const [utmLinksByLc, setUtmLinksByLc] = useState<Record<string, string[]>>({});
   const [universityMap, setUniversityMap] = useState<Map<string, string>>(new Map());
 
+  // Helper functions for calculations
+  const calculateProgress = (total: number, goal: number) => {
+    if (goal === 0) return 0;
+    return (total / goal) * 100;
+  };
+
+  const calculatePercentage = (numerator: number, denominator: number) => {
+    if (denominator === 0) return 0;
+    return (numerator / denominator) * 100;
+  };
+
+  const getRankIcon = (rank: number) => {
+    if (rank === 1) return '🥇';
+    if (rank === 2) return '🥈';
+    if (rank === 3) return '🥉';
+    return `${rank}.`;
+  };
+
   useEffect(() => {
     checkUser();
   }, []);
@@ -213,9 +231,9 @@ export default function DashboardPage() {
       };
 
       const filtered = allSubmissionsState.filter((s:any) => matchesTerm(s) && matchesPhase(s));
-
+      
       filtered.forEach((submission: any) => {
-        let lc = submission.allocated_lc || 'Other';
+        let lc = submission.allocated_lc || 'Organic';
         
         
         // Debug: Check Other allocations
@@ -224,8 +242,12 @@ export default function DashboardPage() {
         const utm_source = getVal(submission, ['utm_source']) || getVal(form, ['utm_source', 'utmSource']);
         const utm_term = (getVal(submission, ['utm_term']) || getVal(form, ['utm_term', 'utmTerm'])).toString();
         const hasAnyUtm = [utm_source, getVal(submission, ['utm_medium']), getVal(submission, ['utm_campaign']), getVal(submission, ['utm_id']), getVal(submission, ['utm_content']), getVal(submission, ['utm_name']), utm_term].some(v => v && String(v).trim() !== '');
-        const isNational = utm_term.toLowerCase().includes('emt');
-        const isOrganic = !hasAnyUtm;
+        // Check if UTM term matches registered EMT UTM links
+        const emtUtmLinks = utmLinksByLc['EMT'] || [];
+        const isNational = !!utm_term && emtUtmLinks.some(link => 
+          String(utm_term).toLowerCase().includes(String(link).toLowerCase())
+        );
+        const isOrganic = !submission.allocated_lc || submission.allocated_lc === 'Organic';
         // Check if UTM source matches any registered UTM links for this LC
         const registeredUtmLinks = utmLinksByLc[lc] || [];
         const isYourUtm = !!utm_source && registeredUtmLinks.some(link => 
@@ -251,11 +273,15 @@ export default function DashboardPage() {
         row._notFound = (row._notFound || 0) + (isNotFound ? 1 : 0);
       });
 
-      const sortedStats = Object.values(lcData).sort((a, b) => b.total_forms - a.total_forms);
+             const sortedStats = Object.values(lcData)
+         .filter(stat => stat.lc !== 'Organic')
+         .sort((a, b) => b.total_forms - a.total_forms);
       
       
       setLcStats(sortedStats);
-      const totals = sortedStats.reduce((acc, stat) => ({
+      // Calculate totals including Organic
+      const allStats = Object.values(lcData);
+      const totals = allStats.reduce((acc, stat) => ({
         totalForms: acc.totalForms + stat.total_forms,
         totalYE: acc.totalYE + stat.ye_count,
         totalAPD: acc.totalAPD + stat.apd_count,
@@ -268,10 +294,12 @@ export default function DashboardPage() {
       setNationalByLc(nationalArr);
       setOrganicByLc(organicArr);
       setNationalTotal(nationalArr.reduce((s, r) => s + r.count, 0));
-      setOrganicTotal(organicArr.reduce((s, r) => s + r.count, 0));
+      // Calculate total organic forms from all LCs
+      const totalOrganicForms = Object.values(organicMap).reduce((sum, count) => sum + count, 0);
+      setOrganicTotal(totalOrganicForms);
 
       // Goals per filters (phase(s) > term(s) sum > latest term when none)
-      let goalsByLc: Record<string, number> = { FHN: 0, Hanoi: 0, NEU: 0, Danang: 0, FHCMC: 0, HCMC: 0, HCME: 0, HCMS: 0, Cantho: 0 };
+      let goalsByLc: Record<string, number> = { FHN: 0, Hanoi: 0, NEU: 0, Danang: 0, FHCMC: 0, HCMC: 0, HCME: 0, HCMS: 0, Cantho: 0, EMT: 0, Organic: 0 };
       try {
         if (phaseFilter) {
           const codes = phaseFilter.split(',').filter(Boolean);
@@ -285,17 +313,37 @@ export default function DashboardPage() {
             if (goalRowsPhases) for (const r of goalRowsPhases as any[]) goalsByLc[String(r.lc_code)] = (goalsByLc[String(r.lc_code)] || 0) + (Number(r.goal) || 0);
           }
         } else {
-          // default to latest term
+          // default to latest term, but for EMT, try to find any available goal
           const latestTerm = phasesMeta.reduce((max, p) => Math.max(max, Number(p.term) || 0), 0);
           const latestCodes = phasesMeta.filter(p => Number(p.term) === latestTerm).map(p => p.code);
           if (latestCodes.length > 0) {
             const { data: goalRowsLatest } = await supabase.from('lc_goals_phase').select('lc_code, goal, phase_code').in('phase_code', latestCodes as any);
             if (goalRowsLatest) for (const r of goalRowsLatest as any[]) goalsByLc[String(r.lc_code)] = (goalsByLc[String(r.lc_code)] || 0) + (Number(r.goal) || 0);
           }
+          
+          // For EMT, if no goal found in latest term, try to find any available goal
+          if (goalsByLc['EMT'] === 0) {
+            const { data: emtGoalsAny } = await supabase.from('lc_goals_phase').select('lc_code, goal, phase_code').eq('lc_code', 'EMT').neq('phase_code', '');
+            if (emtGoalsAny && emtGoalsAny.length > 0) {
+              // Use the first available EMT goal
+              goalsByLc['EMT'] = Number(emtGoalsAny[0].goal) || 0;
+            }
+          }
+          
+          // For Organic, if no goal found in latest term, try to find any available goal
+          if (goalsByLc['Organic'] === 0) {
+            const { data: organicGoalsAny } = await supabase.from('lc_goals_phase').select('lc_code, goal, phase_code').eq('lc_code', 'Organic').neq('phase_code', '');
+            if (organicGoalsAny && organicGoalsAny.length > 0) {
+              // Use the first available Organic goal
+              goalsByLc['Organic'] = Number(organicGoalsAny[0].goal) || 0;
+            }
+          }
         }
       } catch {}
-      setLcGoals(goalsByLc);
+    ;
       
+      setLcGoals(goalsByLc);
+
       // Wait a bit to ensure goals are properly set before calculating summary
       await new Promise(resolve => setTimeout(resolve, 100));
     })();
@@ -345,7 +393,7 @@ export default function DashboardPage() {
       const formData = submission.form_data || {};
       const university = getVal(formData, ['university', 'University', 'uni', 'Uni', 'other_uni', 'other_uni_2']);
       const resolvedLc = resolveLcFromUniversity(university);
-      const lc = resolvedLc || submission.allocated_lc || 'Other';
+      const lc = resolvedLc || submission.allocated_lc || 'Organic';
       totalFormsByLc.set(lc, (totalFormsByLc.get(lc) || 0) + 1);
     });
     
@@ -413,7 +461,7 @@ export default function DashboardPage() {
       const formData = submission.form_data || {};
       const university = getVal(formData, ['university', 'University', 'uni', 'Uni', 'other_uni', 'other_uni_2']);
       const resolvedLc = resolveLcFromUniversity(university);
-      const lc = resolvedLc || submission.allocated_lc || 'Other';
+      const lc = resolvedLc || submission.allocated_lc || 'Organic';
       return lc === 'Danang';
     });
     const danangFormsWithMatchingUtm = danangFormsWithUtmTerm.filter(submission => {
@@ -626,7 +674,7 @@ export default function DashboardPage() {
 
       filtered.forEach((submission: any) => {
         // Use allocated_lc if available, otherwise try to map from uni
-        let lc = submission.allocated_lc || 'Other';
+        let lc = submission.allocated_lc || 'Organic';
         const form = submission?.form_data || {};
         const utm_source = getVal(submission, ['utm_source']) || getVal(form, ['utm_source', 'utmSource']);
         const utm_medium = getVal(submission, ['utm_medium']) || getVal(form, ['utm_medium', 'utmMedium']);
@@ -637,8 +685,12 @@ export default function DashboardPage() {
         const utm_term = (getVal(submission, ['utm_term']) || getVal(form, ['utm_term', 'utmTerm'])).toString();
         const hasAnyUtm = [utm_source, utm_medium, utm_campaign, utm_id, utm_content, utm_name, utm_term]
           .some(v => v && String(v).trim() !== '');
-        const isNational = utm_term.toLowerCase().includes('emt');
-        const isOrganic = !hasAnyUtm;
+        // Check if UTM term matches registered EMT UTM links
+        const emtUtmLinks = utmLinksByLc['EMT'] || [];
+        const isNational = !!utm_term && emtUtmLinks.some(link => 
+          String(utm_term).toLowerCase().includes(String(link).toLowerCase())
+        );
+        const isOrganic = !submission.allocated_lc || submission.allocated_lc === 'Organic';
         // Check if UTM source matches any registered UTM links for this LC
         const registeredUtmLinks = utmLinksByLc[lc] || [];
         const isYourUtm = !!utm_source && registeredUtmLinks.some(link => 
@@ -686,9 +738,6 @@ export default function DashboardPage() {
           // other source (has UTM source but not yours and not EMT)
           const isOther = hasAnyUtm && !isYourUtm && !isNational && hasUtmSource;
           row._other = (row._other || 0) + (isOther ? 1 : 0);
-          // not found from your utm source (has UTM but missing utm_source and not EMT)
-          const isNotFound = hasAnyUtm && !isNational && !hasUtmSource;
-          row._notFound = (row._notFound || 0) + (isNotFound ? 1 : 0);
         }
       });
 
@@ -920,24 +969,57 @@ export default function DashboardPage() {
 
               {/* Data Table */}
               <div className="overflow-x-auto">
-                <table className="w-full text-gray-900">
+                <table className="w-full text-gray-900 border-collapse">
                   <thead>
-                    <tr className="border-b border-gray-200">
-                      <th className="text-left py-2">LC</th>
-                      <th className="text-left py-2">#YE</th>
-                      <th className="text-left py-2">#APD</th>
-                      <th className="text-left py-2">#RE</th>
+                    <tr>
+                      <th className="text-left py-3 px-4" style={{ backgroundColor: '#037EF3', color: 'white' }}>Entity</th>
+                      <th className="text-left py-3 px-4" style={{ backgroundColor: '#00c16e', color: 'white' }}>Goal</th>
+                      <th className="text-left py-3 px-4" style={{ backgroundColor: '#037EF3', color: 'white' }}>#YE</th>
+                      <th className="text-left py-3 px-4" style={{ backgroundColor: '#037EF3', color: 'white' }}>#APD</th>
+                      <th className="text-left py-3 px-4" style={{ backgroundColor: '#037EF3', color: 'white' }}>#RE</th>
+                      <th className="text-left py-3 px-4" style={{ backgroundColor: '#037EF3', color: 'white' }}>Total</th>
                     </tr>
                   </thead>
-                                     <tbody>
-                     {lcStats.map((stat, index) => (
-                      <tr key={stat.lc} className="border-b border-gray-100">
-                        <td className="py-2 font-medium">{index + 1}. {stat.lc}</td>
-                        <td className="py-2">{formatNumber(stat.ye_count)}</td>
-                        <td className="py-2">{formatNumber(stat.apd_count)}</td>
-                        <td className="py-2">{formatNumber(stat.re_count)}</td>
-                      </tr>
-                    ))}
+                  <tbody>
+                                         {lcStats.map((stat, index) => {
+                       const getRankIcon = (rank: number) => {
+                         if (rank === 1) return '🥇';
+                         if (rank === 2) return '🥈';
+                         if (rank === 3) return '🥉';
+                         return '';
+                       };
+                       
+                       const getTopRankStyle = (rank: number) => {
+                         if (rank === 1) return { backgroundColor: '#FEF3E2', color: '#000000' }; // Hot Pink
+                         if (rank === 2) return { backgroundColor: '#C4E1E6', color: '#000000' }; // Light Pink
+                         if (rank === 3) return { backgroundColor: '#EEEEEE', color: '#000000' }; // Pink
+                         return {};
+                       };
+                       
+                       const isTop3 = index < 3;
+                       
+                       return (
+                         <tr key={stat.lc} className={`border-b border-gray-200 ${!isTop3 && (index % 2 === 0 ? 'bg-white' : 'bg-gray-50')}`} style={isTop3 ? getTopRankStyle(index + 1) : {}}>
+                           <td className="py-3 px-4 font-medium text-gray-900">
+                             {index < 3 ? getRankIcon(index + 1) : `${index + 1}.`} {stat.lc}
+                           </td>
+                           <td className="py-3 px-4 font-semibold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{formatNumber(lcGoals[stat.lc] ?? 0)}</td>
+                           <td className="py-3 px-4">{formatNumber(stat.ye_count)}</td>
+                           <td className="py-3 px-4">{formatNumber(stat.apd_count)}</td>
+                           <td className="py-3 px-4">{formatNumber(stat.re_count)}</td>
+                           <td className="py-3 px-4 font-semibold" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{formatNumber(stat.total_forms)}</td>
+                         </tr>
+                       );
+                     })}
+                    {/* Total Row */}
+                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                      <td className="py-3 px-4 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>TOTAL</td>
+                      <td className="py-3 px-4 font-bold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{formatNumber(Object.values(lcGoals).reduce((a, b) => a + b, 0))}</td>
+                      <td className="py-3 px-4 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>{formatNumber(totalStats.totalYE)}</td>
+                      <td className="py-3 px-4 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>{formatNumber(totalStats.totalAPD)}</td>
+                      <td className="py-3 px-4 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>{formatNumber(totalStats.totalRE)}</td>
+                      <td className="py-3 px-4 font-bold" style={{ backgroundColor: '#ffc845', color: '#000000' }}>{formatNumber(totalStats.totalForms)}</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -945,7 +1027,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Signup Statistics */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 mb-6 sm:mb-8">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
             {/* By LC (Total) */}
             <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
               <div className="flex items-center justify-between mb-4">
@@ -953,22 +1035,28 @@ export default function DashboardPage() {
                 <span className="text-sm text-gray-600">Total: {formatNumber(totalStats.totalForms)}</span>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-gray-900 text-sm">
+                <table className="w-full text-gray-900 text-sm border-collapse">
                   <thead>
-                    <tr className="border-b border-gray-200">
-                      <th className="text-left py-2">LC</th>
-                      <th className="text-left py-2">Signups</th>
-                      <th className="text-left py-2">Goal</th>
+                    <tr>
+                      <th className="text-left py-2 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>LC</th>
+                      <th className="text-left py-2 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>Signups</th>
+                      <th className="text-left py-2 px-3" style={{ backgroundColor: '#00c16e', color: 'white' }}>Goal</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {lcStats.map((s) => (
-                      <tr key={`lc-${s.lc}`} className="border-b border-gray-100">
-                        <td className="py-2">{s.lc}</td>
-                        <td className="py-2">{formatNumber(s.total_forms)}</td>
-                        <td className="py-2">{formatNumber(lcGoals[s.lc] ?? 0)}</td>
+                    {lcStats.map((s, index) => (
+                      <tr key={`lc-${s.lc}`} className={`border-b border-gray-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                        <td className="py-2 px-3 font-medium">{s.lc}</td>
+                        <td className="py-2 px-3">{formatNumber(s.total_forms)}</td>
+                        <td className="py-2 px-3 font-semibold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{formatNumber(lcGoals[s.lc] ?? 0)}</td>
                       </tr>
                     ))}
+                    {/* Total Row */}
+                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                      <td className="py-2 px-3 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>TOTAL</td>
+                      <td className="py-2 px-3 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>{formatNumber(totalStats.totalForms)}</td>
+                      <td className="py-2 px-3 font-bold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{formatNumber(Object.values(lcGoals).reduce((a, b) => a + b, 0))}</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -977,129 +1065,124 @@ export default function DashboardPage() {
             {/* National by LC */}
             <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">National (utm_term contains "EMT")</h3>
+                <h3 className="text-lg font-semibold text-gray-900">Signups by National</h3>
                 <span className="text-sm text-gray-600">Total: {formatNumber(nationalTotal)}</span>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-gray-900 text-sm">
+                <table className="w-full text-gray-900 text-sm border-collapse">
                   <thead>
-                    <tr className="border-b border-gray-200">
-                      <th className="text-left py-2">LC</th>
-                      <th className="text-left py-2">Signups</th>
+                    <tr>
+                      <th className="text-left py-2 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>LC</th>
+                      <th className="text-left py-2 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>National</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {nationalByLc.map((s) => (
-                      <tr key={`national-${s.lc}`} className="border-b border-gray-100">
-                        <td className="py-2">{s.lc}</td>
-                        <td className="py-2">{formatNumber(s.count)}</td>
+                    {nationalByLc.map((s, index) => (
+                      <tr key={`national-${s.lc}`} className={`border-b border-gray-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                        <td className="py-2 px-3 font-medium">{s.lc}</td>
+                        <td className="py-2 px-3 font-semibold" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{formatNumber(s.count)}</td>
                       </tr>
                     ))}
+                    {/* Total Row */}
+                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                      <td className="py-2 px-3 font-bold text-gray-900" style={{ backgroundColor: '#ffc845' }}>TOTAL</td>
+                      <td className="py-2 px-3 font-bold" style={{ backgroundColor: '#ffc845', color: '#000000' }}>{formatNumber(nationalTotal)}</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
             </div>
 
-            {/* Organic by LC */}
-            <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">Organic (no UTM)</h3>
-                <span className="text-sm text-gray-600">Total: {formatNumber(organicTotal)}</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-gray-900 text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200">
-                      <th className="text-left py-2">LC</th>
-                      <th className="text-left py-2">Signups</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {organicByLc.map((s) => (
-                      <tr key={`organic-${s.lc}`} className="border-b border-gray-100">
-                        <td className="py-2">{s.lc}</td>
-                        <td className="py-2">{formatNumber(s.count)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            
           </div>
 
           {/* Signup Summary Matrix */}
           <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Signup Summary</h3>
             <div className="overflow-x-auto">
-              <table className="w-full text-gray-900 text-sm">
+              <table className="w-full text-gray-900 text-sm border-collapse">
                 <thead>
-                  <tr className="border-b border-gray-200">
-                    <th className="text-left py-2 px-2">Entity</th>
-                    <th className="text-left py-2 px-2">Goal</th>
-                    <th className="text-left py-2 px-2">SUs | market (total)</th>
-                    <th className="text-left py-2 px-2">MSUs</th>
-                    <th className="text-left py-2 px-2">SUs | utm source</th>
-                    <th className="text-left py-2 px-2">EMT + Organic</th>
-                    <th className="text-left py-2 px-2">SUs | other source</th>
-                    <th className="text-left py-2 px-2">not found from your utm source</th>
+                  <tr>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>Type</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>Entity</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#00c16e', color: 'white' }}>Goal</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ các nguồn">SUs | market (total)</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ UTM Links cho own market">MSUs</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs mỗi LC có được từ UTM Links cho mọi market">SUs | utm source</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }} title="SUs nhận được từ EMT + Organic">EMT + Organic</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#037EF3', color: 'white' }}>SUs | other source</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#00c16e', color: 'white' }} title="Progress = SUs / Goal">Progress</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#7552CC', color: 'white' }} title="%M.SUs/SUs = MSUs / SUs">%M.SUs/SUs</th>
+                    <th className="text-center py-3 px-3" style={{ backgroundColor: '#FF6B6B', color: 'white' }} title="%M.SUs/UTM = MSUs / SUs | utm source">%M.SUs/UTM</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Local section */}
-                  <tr className="bg-gray-50">
-                    <td className="py-2 px-2 font-semibold">local</td>
-                    <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
-                  </tr>
-                  {localSummary.map(row => (
-                    <tr key={`sum-${row.lc}`} className="border-b border-gray-100">
-                      <td className="py-2 px-2 font-medium">{row.lc}</td>
-                      <td className="py-2 px-2">{row.goal}</td>
-                      <td className="py-2 px-2">{row.total}</td>
-                      <td className="py-2 px-2">{row.msu}</td>
-                      <td className="py-2 px-2">{row.yourUtm}</td>
-                      <td className="py-2 px-2">{row.emtPlusOrganic}</td>
-                      <td className="py-2 px-2">{row.otherSource}</td>
-                      <td className="py-2 px-2">{row.notFound}</td>
+                                    {/* Local section */}
+                  {localSummary.map((row, index) => (
+                    <tr key={`sum-${row.lc}`} className={`border-b border-gray-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      {index === 0 && (
+                        <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#037EF3', color: 'white', writingMode: 'vertical-rl', textOrientation: 'mixed', transform: 'rotate(180deg)' }} rowSpan={localSummary.length}>LOCAL</td>
+                      )}
+                      <td className="py-2 px-3 font-medium text-gray-900">{row.lc}</td>
+                      <td className="py-2 px-3 font-semibold text-center" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{row.goal}</td>
+                      <td className="py-2 px-3 text-center">{row.total}</td>
+                      <td className="py-2 px-3 text-center">{row.msu}</td>
+                      <td className="py-2 px-3 text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{row.yourUtm}</td>
+                      <td className="py-2 px-3 text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{row.emtPlusOrganic}</td>
+                      <td className="py-2 px-3 text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{row.otherSource}</td>
+                      <td className="py-2 px-3 text-center font-semibold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{calculateProgress(row.total, row.goal).toFixed(2)}%</td>
+                      <td className="py-2 px-3 text-center font-semibold" style={{ backgroundColor: '#f0f0ff', color: '#7552CC' }}>{calculatePercentage(row.msu, row.total).toFixed(2)}%</td>
+                      <td className="py-2 px-3 text-center font-semibold" style={{ backgroundColor: '#ffe6e6', color: '#FF6B6B' }}>{calculatePercentage(row.msu, row.yourUtm).toFixed(2)}%</td>
                     </tr>
                   ))}
                   {localTotals && (
-                    <tr className="bg-gray-50 font-semibold">
-                      <td className="py-2 px-2">TOTAL LOCAL</td>
-                      <td className="py-2 px-2">{localTotals.goal}</td>
-                      <td className="py-2 px-2">{localTotals.total}</td>
-                      <td className="py-2 px-2">{localTotals.msu}</td>
-                      <td className="py-2 px-2">{localTotals.yourUtm}</td>
-                      <td className="py-2 px-2">{localTotals.emtPlusOrganic}</td>
-                      <td className="py-2 px-2">{localTotals.otherSource}</td>
-                      <td className="py-2 px-2">{localTotals.notFound}</td>
+                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                      <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#ffc845', color: '#000000' }}>TOTAL</td>
+                      <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>LOCAL</td>
+                      <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{localTotals.goal}</td>
+                      <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>{localTotals.total}</td>
+                      <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>{localTotals.msu}</td>
+                      <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{localTotals.yourUtm}</td>
+                      <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{localTotals.emtPlusOrganic}</td>
+                      <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>{localTotals.otherSource}</td>
+                      <td className="py-2 px-3 font-bold text-center font-semibold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{calculateProgress(localTotals.total, localTotals.goal).toFixed(2)}%</td>
+                      <td className="py-2 px-3 font-bold text-center font-semibold" style={{ backgroundColor: '#f0f0ff', color: '#7552CC' }}>{calculatePercentage(localTotals.msu, localTotals.total).toFixed(2)}%</td>
+                      <td className="py-2 px-3 font-bold text-center font-semibold" style={{ backgroundColor: '#ffe6e6', color: '#FF6B6B' }}>{calculatePercentage(localTotals.msu, localTotals.yourUtm).toFixed(2)}%</td>
                     </tr>
                   )}
                   {/* National section */}
-                  <tr className="bg-gray-50">
-                    <td className="py-2 px-2 font-semibold">national</td>
-                    <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
-                  </tr>
-                  {nationalSummary.map(r => (
-                    <tr key={`nat-${r.label}`} className="border-b border-gray-100">
-                      <td className="py-2 px-2 font-medium">{r.label}</td>
-                      <td className="py-2 px-2">-</td>
-                      <td className="py-2 px-2">{formatNumber(r.count)}</td>
-                      <td className="py-2 px-2">-</td>
-                      <td className="py-2 px-2">-</td>
-                      <td className="py-2 px-2">-</td>
-                      <td className="py-2 px-2">-</td>
-                      <td className="py-2 px-2">-</td>
+                  {nationalSummary.map((r, index) => (
+                    <tr key={`nat-${r.label}`} className={`border-b border-gray-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      {index === 0 && (
+                        <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#037EF3', color: 'white', writingMode: 'vertical-rl', textOrientation: 'mixed', transform: 'rotate(180deg)' }} rowSpan={nationalSummary.length}>NATIONAL</td>
+                      )}
+                      <td className="py-2 px-3 font-medium text-gray-900">{r.label}</td>
+                      <td className="py-2 px-3 text-center font-semibold" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>
+                        {r.label === 'EMT' ? formatNumber(lcGoals['EMT'] ?? 0) : 
+                         r.label === 'Organic' ? formatNumber(lcGoals['Organic'] ?? 0) : '-'}
+                      </td>
+                      <td className="py-2 px-3 text-center">{formatNumber(r.count)}</td>
+                      <td className="py-2 px-3 text-center">-</td>
+                      <td className="py-2 px-3 text-center">-</td>
+                      <td className="py-2 px-3 text-center">-</td>
+                      <td className="py-2 px-3 text-center">-</td>
+                      <td className="py-2 px-3 text-center">-</td>
+                      <td className="py-2 px-3 text-center">-</td>
+                      <td className="py-2 px-3 text-center">-</td>
                     </tr>
                   ))}
-                  <tr className="bg-gray-50 font-semibold">
-                    <td className="py-2 px-2">TOTAL NATIONAL</td>
-                    <td className="py-2 px-2">-</td>
-                    <td className="py-2 px-2">{formatNumber(nationalTotal + organicTotal)}</td>
-                    <td className="py-2 px-2">-</td>
-                    <td className="py-2 px-2">-</td>
-                    <td className="py-2 px-2">-</td>
-                    <td className="py-2 px-2">-</td>
-                    <td className="py-2 px-2">-</td>
+                                    <tr style={{ backgroundColor: '#ffc845', borderTop: '2px solid #f48924' }}>
+                    <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#ffc845', color: '#000000' }}>TOTAL</td>
+                    <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>NATIONAL</td>
+                    <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#e8f5e8', color: '#00c16e' }}>{formatNumber((lcGoals['EMT'] ?? 0) + (lcGoals['Organic'] ?? 0))}</td>
+                    <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#ffc845', color: '#000000' }}>{formatNumber(nationalTotal + organicTotal)}</td>
+                    <td className="py-2 px-3 font-bold text-gray-900 text-center" style={{ backgroundColor: '#ffc845' }}>-</td>
+                    <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>-</td>
+                    <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>-</td>
+                    <td className="py-2 px-3 font-bold text-center" style={{ backgroundColor: '#f5f5f5', color: '#000000' }}>-</td>
+                    <td className="py-2 px-3 font-bold text-center">-</td>
+                    <td className="py-2 px-3 font-bold text-center">-</td>
+                    <td className="py-2 px-3 font-bold text-center">-</td>
                   </tr>
                 </tbody>
               </table>
