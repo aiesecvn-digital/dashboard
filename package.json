@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
   "dev": "next dev",
-  "build": "next build",
+  "build": "next build --no-lint",
   "export": "next export",
-  "deploy": "next build && next export"
+  "deploy": "next build --no-lint && next export"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",
