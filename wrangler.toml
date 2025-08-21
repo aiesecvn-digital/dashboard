@@ -1,8 +1,7 @@
 name = "web-tracking-dashboard"
 compatibility_date = "2025-08-21"
 
-[site]
-bucket = "./out"
+pages_build_output_dir = "out"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
