@@ -59,7 +59,6 @@ export default function AnalyticsPage() {
   const [phaseFilter, setPhaseFilter] = useState<string>('');
   const [phaseRanges, setPhaseRanges] = useState<Array<{ code: string; start: string | null; end: string | null }>>([]);
   const [phasesMeta, setPhasesMeta] = useState<Array<{ code: string; term: number; half: number; start: string | null; end: string | null }>>([]);
-  const [utmLinksByLc, setUtmLinksByLc] = useState<Record<string, string[]>>({});
 
   // Available LCs
   const availableLCs = ['FHN', 'Hanoi', 'NEU', 'Danang', 'FHCMC', 'HCMC', 'HCME', 'HCMS', 'Cantho'];
@@ -89,7 +88,6 @@ export default function AnalyticsPage() {
     rows.forEach(r => { data[r] = {}; yearColumns.forEach(c => data[r][c] = 0); });
 
     filteredSubmissions.forEach(sub => {
-      if (!belongsToSelected(sub)) return;
       const lc = sub.allocated_lc || 'Unknown';
       const form = sub.form_data || {};
       const yos = form.year_of_study ?? form.yearOfStudy ?? form.UniversityYear ?? sub.UniversityYear ?? form['University Year'] ?? form.university_year;
@@ -137,7 +135,6 @@ export default function AnalyticsPage() {
 
       setUser(currentUser);
       await loadData();
-      await loadUtmLinks();
       
       try {
         const { data: phases } = await supabase
@@ -155,27 +152,6 @@ export default function AnalyticsPage() {
       setLoading(false);
 		}
 	};
-
-  const loadUtmLinks = async () => {
-    try {
-      const { data: utmLinks, error } = await supabase.from('utm_links').select('*');
-      if (error) throw error;
-      const linksByLc: Record<string, string[]> = {};
-      (utmLinks || []).forEach((link: any) => {
-        const lcCode = link.entity_code || link.lc_code || link.lc || link.local_committee || link.entity;
-        const utmLink = link.url || link.utm_link || link.utm || link.link;
-        if (lcCode && utmLink) {
-          const key = String(lcCode);
-          if (!linksByLc[key]) linksByLc[key] = [];
-          linksByLc[key].push(String(utmLink));
-        }
-      });
-      setUtmLinksByLc(linksByLc);
-    } catch (e) {
-      console.error('Error loading UTM links:', e);
-      setUtmLinksByLc({});
-    }
-  };
 
 	const loadData = async () => {
 		try {
@@ -209,42 +185,21 @@ export default function AnalyticsPage() {
 		}
 	};
 
-  const getVal = (obj: any, keys: string[]): any => {
-    for (const k of keys) {
-      const v = obj?.[k];
-      if (v !== undefined && v !== null && String(v).trim() !== '') return v;
-    }
-    return '';
-  };
-
-  const getUtmTerm = (s: any): string => {
-    const form = s?.form_data || {};
-    return (
-      getVal(form, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) ||
-      getVal(s, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) ||
-      ''
-    ).toString();
-  };
-
-  const belongsToSelected = (s: any): boolean => {
-    if (selectedLC === 'Organic') {
-      return !s.allocated_lc || s.allocated_lc === 'Organic';
-    }
-    if (selectedLC === 'EMT' || selectedLC === 'EST') {
-      const utmTerm = getUtmTerm(s);
-      const links = utmLinksByLc[selectedLC] || [];
-      return !!utmTerm && links.some(l => utmTerm.toLowerCase().includes(String(l).toLowerCase()));
-    }
-    return s.allocated_lc === selectedLC;
-  };
-
   // Apply filters
   useEffect(() => {
     if (!allSubmissions || allSubmissions.length === 0) return;
 
+    const getVal = (obj: any, keys: string[]): any => {
+      for (const k of keys) {
+        const v = obj?.[k];
+        if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+      }
+      return '';
+    };
+
     const matchesMonth = (s: any) => {
-      if (!monthFilter) return true;
-      try {
+    if (!monthFilter) return true;
+    try {
         const date = new Date(s.timestamp);
         const month = date.getUTCMonth() + 1;
         const year = date.getUTCFullYear();
@@ -254,34 +209,34 @@ export default function AnalyticsPage() {
     };
 
     const matchesTerm = (s: any) => {
-      if (!termFilter) return true;
-      try {
+    if (!termFilter) return true;
+    try {
         const y = new Date(s.timestamp).getUTCFullYear();
-        const set = new Set(termFilter.split(',').filter(Boolean));
+      const set = new Set(termFilter.split(',').filter(Boolean));
         return set.has(String(y));
       } catch { return true; }
     };
 
     const matchesPhase = (s: any) => {
-      if (!phaseFilter) return true;
+    if (!phaseFilter) return true;
       const codes = new Set(phaseFilter.split(',').filter(Boolean));
       return phaseRanges.some(range => {
         if (!codes.has(range.code) || !range.start || !range.end) return false;
-        const t = new Date(s.timestamp).getTime();
+    const t = new Date(s.timestamp).getTime();
         return t >= new Date(range.start).getTime() && t <= new Date(range.end).getTime();
-      });
-    };
+    });
+  };
 
     const filtered = allSubmissions.filter((s: any) => 
-      matchesMonth(s) && matchesTerm(s) && matchesPhase(s) && belongsToSelected(s)
+      matchesMonth(s) && matchesTerm(s) && matchesPhase(s)
     );
 
     setFilteredSubmissions(filtered);
-  }, [allSubmissions, monthFilter, termFilter, phaseFilter, phaseRanges, selectedLC, utmLinksByLc]);
+  }, [allSubmissions, monthFilter, termFilter, phaseFilter, phaseRanges]);
 
   // Get university statistics for selected LC
   const getUniversityStats = (): UniversityStats[] => {
-    const lcSubmissions = filteredSubmissions.filter(s => belongsToSelected(s));
+    const lcSubmissions = filteredSubmissions.filter(s => s.allocated_lc === selectedLC);
     const universityMap = new Map<string, number>();
 
     lcSubmissions.forEach(submission => {
@@ -301,8 +256,9 @@ export default function AnalyticsPage() {
 
   // Get year of study statistics
   const getYearOfStudyStats = (): YearOfStudyStats[] => {
-    let submissions = filteredSubmissions.filter(s => belongsToSelected(s));
+    let submissions = filteredSubmissions.filter(s => s.allocated_lc === selectedLC);
     
+    // Filter by selected university if not 'all'
     if (selectedUniversity !== 'all') {
       submissions = submissions.filter(s => 
         (s.university || s.uni) === selectedUniversity
@@ -312,6 +268,7 @@ export default function AnalyticsPage() {
     const yearMap = new Map<string, number>();
 
     submissions.forEach(submission => {
+      // Extract year of study from multiple possible sources
       const formData = submission.form_data || {};
       const yearOfStudy = 
         formData.year_of_study || 
@@ -320,9 +277,12 @@ export default function AnalyticsPage() {
         submission.UniversityYear ||
         formData['University Year'] ||
         formData.university_year ||
-        'Năm 4/Năm 5/Năm 6/Khác';
+        'Unknown';
+      
+      // Clean up the year value
       const cleanYear = String(yearOfStudy).trim();
-      const finalYear = cleanYear || 'Năm 4/Năm 5/Năm 6/Khác';
+      const finalYear = cleanYear || 'Unknown';
+      
       yearMap.set(finalYear, (yearMap.get(finalYear) || 0) + 1);
     });
 
@@ -338,12 +298,14 @@ export default function AnalyticsPage() {
 
   // Get available universities for the selected LC
   const getAvailableUniversities = (): string[] => {
-    const lcSubmissions = filteredSubmissions.filter(s => belongsToSelected(s));
+    const lcSubmissions = filteredSubmissions.filter(s => s.allocated_lc === selectedLC);
     const universities = new Set<string>();
+    
     lcSubmissions.forEach(submission => {
       const university = submission.university || submission.uni;
       if (university) universities.add(university);
     });
+
     return Array.from(universities).sort();
   };
 
