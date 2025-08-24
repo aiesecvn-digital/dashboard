@@ -142,15 +142,6 @@ export default function LoginPage() {
               </button>
             </form>
 
-            {/* Reset password link */}
-            <div className="mt-6 text-center">
-              <p className="text-sm text-gray-600">
-                Having trouble signing in?{' '}
-                <a href="#" className="text-primary hover:brightness-110 font-medium">
-                  Reset Password
-                </a>
-              </p>
-            </div>
           </div>
         </div>
       </main>

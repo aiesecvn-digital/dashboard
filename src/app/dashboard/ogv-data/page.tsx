@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { getCurrentUser, supabase } from '@/lib/supabase';
 import MultiSelect from '@/components/MultiSelect';
+import SingleSelect from '@/components/SingleSelect';
+import { LocalCache, CACHE_KEYS, CACHE_TTL } from '@/lib/cache';
 
 interface FormSubmission {
   id: string;
@@ -59,6 +61,8 @@ interface UniversityMapping {
   lc_code: string;
 }
 
+
+
 export default function AnalyticsPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
@@ -87,18 +91,26 @@ export default function AnalyticsPage() {
   const [nationalUtmLinks, setNationalUtmLinks] = useState<string[]>([]);
   const [utmTermFilter, setUtmTermFilter] = useState<string>('');
   
+  // Filter states for oGV data
+  const [selectedMajors, setSelectedMajors] = useState<string[]>([]);
+  const [selectedYears, setSelectedYears] = useState<string[]>([]);
+  const [selectedStartDates, setSelectedStartDates] = useState<string[]>([]);
+  const [selectedReceiveInfo, setSelectedReceiveInfo] = useState<string[]>([]);
+  const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+  
   // Pagination state for raw data
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(50);
+  const [itemsPerPage, setItemsPerPage] = useState(5);
   // Pagination state for cleaned data
   const [currentPageCleaned, setCurrentPageCleaned] = useState(1);
-  const [itemsPerPageCleaned, setItemsPerPageCleaned] = useState(50);
+  const [itemsPerPageCleaned, setItemsPerPageCleaned] = useState(5);
   // Pagination state for manual allocation
   const [currentPageManual, setCurrentPageManual] = useState(1);
-  const [itemsPerPageManual, setItemsPerPageManual] = useState(50);
+  const [itemsPerPageManual, setItemsPerPageManual] = useState(5);
   // Pagination state for university mapping
   const [currentPageMapping, setCurrentPageMapping] = useState(1);
   const [itemsPerPageMapping, setItemsPerPageMapping] = useState(20);
+
   const [importLoading, setImportLoading] = useState(false);
 
 
@@ -121,7 +133,18 @@ export default function AnalyticsPage() {
     setCurrentPageMapping(1);
   }, [mappingSearch]);
 
+
+
   const loadUtmLinks = async () => {
+    const cache = LocalCache.getInstance();
+    const cachedData = cache.get<{linksByLc: Record<string, string[]>, nationalLinks: string[]}>(CACHE_KEYS.UTM_LINKS);
+    
+    if (cachedData) {
+      setUtmLinksByLc(cachedData.linksByLc);
+      setNationalUtmLinks(cachedData.nationalLinks);
+      return;
+    }
+
     try {
       const { data: utmLinks, error } = await supabase
         .from('utm_links')
@@ -161,6 +184,12 @@ export default function AnalyticsPage() {
       
       setUtmLinksByLc(linksByLc);
       setNationalUtmLinks(nationalLinks);
+      
+      // Cache the processed data
+      cache.set(CACHE_KEYS.UTM_LINKS, {
+        linksByLc,
+        nationalLinks
+      }, CACHE_TTL.UTM_LINKS);
     } catch (error) {
       console.error('Error loading UTM links:', error);
       setUtmLinksByLc({});
@@ -179,11 +208,23 @@ export default function AnalyticsPage() {
       }
 
       // Check if user is admin
-      const { data: profile } = await supabase
+      const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('role')
         .eq('id', currentUser.id)
-        .single();
+        .maybeSingle();
+
+      if (profileError) {
+        console.error('Error fetching profile:', profileError);
+        router.push('/auth/login');
+        return;
+      }
+
+      if (!profile) {
+        console.error('User profile not found');
+        router.push('/auth/login');
+        return;
+      }
 
       if (profile?.role !== 'admin') {
         router.push('/dashboard');
@@ -257,7 +298,7 @@ export default function AnalyticsPage() {
     const form = row?.form_data ?? {};
     return {
       id: String(row.id),
-      timestamp: String(coalesce(row.timestamp, row.created_at, form.timestamp, new Date().toISOString())),
+      timestamp: String(coalesce(row.timestamp, row.created_at, form.timestamp, '')),
       form_code: String(coalesce(row.form_code, row['form-code'], form.form_code, form.formCode, form['form-code'])),
       name: String(coalesce(row.name, form.name)),
       birth: String(coalesce(row.birth, form.birth)),
@@ -479,6 +520,8 @@ export default function AnalyticsPage() {
 		}
 	};
 
+
+
   const handleAllocateLC = async (submissionId: string, lcCode: string) => {
 		setIsManualAllocating(true);
 		try {
@@ -628,9 +671,7 @@ export default function AnalyticsPage() {
     if (!termFilter) return true;
     try {
       const year = new Date(s.timestamp).getUTCFullYear();
-      const set = new Set(termFilter.split(',').filter(Boolean));
-      if (set.size === 0) return true;
-      return set.has(String(year));
+      return String(year) === termFilter;
     } catch {
       return true;
     }
@@ -665,13 +706,58 @@ export default function AnalyticsPage() {
       submission.uni.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (submission.university && submission.university.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (submission.other_uni && submission.other_uni.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (submission.other_uni_2 && submission.other_uni_2.toLowerCase().includes(searchTerm.toLowerCase()))
+      (submission.other_uni_2 && submission.other_uni_2.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      submission.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.phone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.form_code?.toLowerCase().includes(searchTerm.toLowerCase())
     )
     .filter(matchesLc)
     .filter(matchesMonth)
     .filter(matchesTerm)
     .filter(matchesPhase)
-    .filter(matchesUtmTerm);
+    .filter(matchesUtmTerm)
+    .filter(submission => {
+      // Major filter
+      if (selectedMajors.length > 0 && !selectedMajors.includes(submission.Major)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Year filter
+      if (selectedYears.length > 0 && !selectedYears.includes(submission.UniversityYear)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Start Date filter
+      if (selectedStartDates.length > 0 && !selectedStartDates.includes(submission.startdate)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Receive Info filter
+      if (selectedReceiveInfo.length > 0) {
+        const receiveInfo = submission.ReceiveInformation || '';
+        const hasMatchingReceiveInfo = selectedReceiveInfo.some(selected => 
+          receiveInfo.toLowerCase().includes(selected.toLowerCase())
+        );
+        if (!hasMatchingReceiveInfo) {
+          return false;
+        }
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Channel filter
+      if (selectedChannels.length > 0 && !selectedChannels.includes(submission.Channel)) {
+        return false;
+      }
+      return true;
+    });
 
   // Pagination logic for manual allocation
   const totalPagesManual = Math.ceil(filteredSubmissions.length / itemsPerPageManual);
@@ -684,13 +770,58 @@ export default function AnalyticsPage() {
       submission.uni.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (submission.university && submission.university.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (submission.other_uni && submission.other_uni.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (submission.other_uni_2 && submission.other_uni_2.toLowerCase().includes(searchTerm.toLowerCase()))
+      (submission.other_uni_2 && submission.other_uni_2.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      submission.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.phone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.form_code?.toLowerCase().includes(searchTerm.toLowerCase())
     )
     .filter(matchesLc)
     .filter(matchesMonth)
     .filter(matchesTerm)
     .filter(matchesPhase)
-    .filter(matchesUtmTerm);
+    .filter(matchesUtmTerm)
+    .filter(submission => {
+      // Major filter
+      if (selectedMajors.length > 0 && !selectedMajors.includes(submission.Major)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Year filter
+      if (selectedYears.length > 0 && !selectedYears.includes(submission.UniversityYear)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Start Date filter
+      if (selectedStartDates.length > 0 && !selectedStartDates.includes(submission.startdate)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Receive Info filter
+      if (selectedReceiveInfo.length > 0) {
+        const receiveInfo = submission.ReceiveInformation || '';
+        const hasMatchingReceiveInfo = selectedReceiveInfo.some(selected => 
+          receiveInfo.toLowerCase().includes(selected.toLowerCase())
+        );
+        if (!hasMatchingReceiveInfo) {
+          return false;
+        }
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Channel filter
+      if (selectedChannels.length > 0 && !selectedChannels.includes(submission.Channel)) {
+        return false;
+      }
+      return true;
+    });
 
   // Pagination logic for raw data
   const totalPages = Math.ceil(filteredRawData.length / itemsPerPage);
@@ -703,7 +834,7 @@ export default function AnalyticsPage() {
     setCurrentPage(1);
     setCurrentPageCleaned(1);
     setCurrentPageManual(1);
-  }, [searchTerm, lcFilter, monthFilter, termFilter, phaseFilter, utmTermFilter]);
+  }, [searchTerm, lcFilter, monthFilter, termFilter, phaseFilter, utmTermFilter, selectedMajors, selectedYears, selectedStartDates, selectedReceiveInfo, selectedChannels]);
 
   const cleanedData = getCleanedData();
   const filteredCleanedData = cleanedData
@@ -711,12 +842,58 @@ export default function AnalyticsPage() {
       submission.uni.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (submission.university && submission.university.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (submission.other_uni && submission.other_uni.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (submission.other_uni_2 && submission.other_uni_2.toLowerCase().includes(searchTerm.toLowerCase()))
+      (submission.other_uni_2 && submission.other_uni_2.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      submission.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.phone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      submission.form_code?.toLowerCase().includes(searchTerm.toLowerCase())
     )
     .filter(matchesLc)
     .filter(matchesMonth)
     .filter(matchesTerm)
-    .filter(matchesPhase);
+    .filter(matchesPhase)
+    .filter(matchesUtmTerm)
+    .filter(submission => {
+      // Major filter
+      if (selectedMajors.length > 0 && !selectedMajors.includes(submission.Major)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Year filter
+      if (selectedYears.length > 0 && !selectedYears.includes(submission.UniversityYear)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Start Date filter
+      if (selectedStartDates.length > 0 && !selectedStartDates.includes(submission.startdate)) {
+        return false;
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Receive Info filter
+      if (selectedReceiveInfo.length > 0) {
+        const receiveInfo = submission.ReceiveInformation || '';
+        const hasMatchingReceiveInfo = selectedReceiveInfo.some(selected => 
+          receiveInfo.toLowerCase().includes(selected.toLowerCase())
+        );
+        if (!hasMatchingReceiveInfo) {
+          return false;
+        }
+      }
+      return true;
+    })
+    .filter(submission => {
+      // Channel filter
+      if (selectedChannels.length > 0 && !selectedChannels.includes(submission.Channel)) {
+        return false;
+      }
+      return true;
+    });
 
   // Pagination logic for cleaned data
   const totalPagesCleaned = Math.ceil(filteredCleanedData.length / itemsPerPageCleaned);
@@ -774,6 +951,28 @@ export default function AnalyticsPage() {
         alert('No rows detected');
         return;
       }
+
+      // Fetch all existing form submissions for duplicate checking
+      const { data: existingSubmissions, error: fetchError } = await supabase
+        .from('form_submissions')
+        .select('"form-code"');
+      
+      if (fetchError) {
+        console.error('Failed to fetch existing submissions:', fetchError);
+        alert('Failed to check for duplicates. Please try again.');
+        return;
+      }
+
+      // Create a set of existing form identifiers for fast lookup
+      const existingFormCodes = new Set<string>();
+      
+      existingSubmissions?.forEach((sub: any) => {
+        const formCode = sub['form-code'];
+        if (formCode) {
+          existingFormCodes.add(formCode.toLowerCase().trim());
+        }
+      });
+
 
       function parseDate(value: any): Date {
         if (!value) return new Date();
@@ -869,23 +1068,69 @@ export default function AnalyticsPage() {
         };
       });
 
-      // Deduplicate by phone/email: keep latest record
-      const keyMap = new Map<string, any>();
+      // Check for duplicates and deduplicate
+      const duplicates: any[] = [];
+      const uniqueRows: any[] = [];
+      
       for (const row of normalized) {
+        const formCode = row.form_code || '';
+
+      let isDuplicate = false;
+      let duplicateReason = '';
+      
+      // Check by form code
+      if (formCode && existingFormCodes.has(formCode.toLowerCase().trim())) {
+        isDuplicate = true;
+        duplicateReason = 'Form code already exists';
+      }
+        
+        if (isDuplicate) {
+          duplicates.push({
+            ...row,
+            reason: duplicateReason
+          });
+        } else {
+          uniqueRows.push(row);
+        }
+      }
+      
+      // Deduplicate within the new data: keep latest record
+      const keyMap = new Map<string, any>();
+      for (const row of uniqueRows) {
         const phone = row.phone || '';
         const email = row.email || '';
-        const key = String(phone || email || Math.random());
+        const key = String(phone || email || crypto.randomUUID());
         const prev = keyMap.get(key);
         if (!prev) {
           keyMap.set(key, row);
         } else {
-          const t1 = new Date(prev.timestamp || Date.now()).getTime();
-          const t2 = new Date(row.timestamp || Date.now()).getTime();
+          const t1 = new Date(prev.timestamp || '').getTime();
+          const t2 = new Date(row.timestamp || '').getTime();
           if (t2 >= t1) keyMap.set(key, row);
         }
       }
 
       const toInsert = Array.from(keyMap.values());
+      
+      // Show duplicate information
+      if (duplicates.length > 0) {
+        const duplicateMessage = `Found ${duplicates.length} duplicate forms that will be skipped:\n\n` +
+          duplicates.slice(0, 5).map(d => 
+            `- ${d.name || 'Unknown'} (${d.phone || d.email || 'No contact'}) - ${d.reason}`
+          ).join('\n') +
+          (duplicates.length > 5 ? `\n... and ${duplicates.length - 5} more duplicates` : '');
+        
+        if (!confirm(`${duplicateMessage}\n\nContinue with importing ${toInsert.length} unique forms?`)) {
+          setImportLoading(false);
+          return;
+        }
+      }
+      
+      if (toInsert.length === 0) {
+        alert('No unique forms to import after duplicate checking.');
+        setImportLoading(false);
+        return;
+      }
       
       // Insert in chunks to avoid payload limits
       const chunkSize = 500;
@@ -926,7 +1171,11 @@ export default function AnalyticsPage() {
         }
       }
 
-      alert('Import completed');
+      const successMessage = duplicates.length > 0 
+        ? `Import completed successfully!\n\n- ${toInsert.length} unique forms imported\n- ${duplicates.length} duplicate forms skipped`
+        : `Import completed successfully!\n\n- ${toInsert.length} forms imported`;
+      
+      alert(successMessage);
       await loadData();
     } catch (e: any) {
       console.error(e);
@@ -936,13 +1185,13 @@ export default function AnalyticsPage() {
     }
   };
 
-     if (loading) {
-     return (
-       <div className="min-h-screen flex items-center justify-center bg-white">
-         <img src="/giphy.gif" alt="Loading..." className="h-50 w-50 object-contain" />
-       </div>
-     );
-   }
+  if (loading) {
+    return (
+     <div className="min-h-screen flex items-center justify-center bg-cover bg-center bg-no-repeat" style={{ backgroundImage: 'url(/bg.png)' }}>
+        <img src="/giphy.gif" alt="Loading..." className="h-50 w-50 object-contain" />
+      </div>
+    );
+  }
 
      return (
      <div className="min-h-screen bg-gradient-to-bl from-[#f3f4f6] to-[#e5e7eb]">
@@ -969,29 +1218,27 @@ export default function AnalyticsPage() {
        )}
 
 
-       {/* Header */}
-       <header className="bg-white border-b border-gray-200">
-         <div className="flex items-center justify-between px-3 sm:px-4 py-3">
-           <div className="flex items-center space-x-2 sm:space-x-3">
-             <button
-               onClick={() => window.dispatchEvent(new Event('sidebar:toggle'))}
-               className="p-2 rounded-md hover:bg-gray-100 text-gray-700"
-               aria-label="Toggle sidebar"
-             >
-               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                 <path fillRule="evenodd" d="M3.75 5.25a.75.75 0 01.75-.75h15a.75.75 0 010 1.5h-15a.75.75 0 01-.75-.75zm0 6a.75.75 0 01.75-.75h15a.75.75 0 010 1.5h-15a.75.75 0 01-.75-.75zm.75 5.25a.75.75 0 000 1.5h15a.75.75 0 000-1.5h-15z" clipRule="evenodd" />
-               </svg>
-             </button>
-             <h1 className="text-lg sm:text-xl font-semibold text-gray-900 truncate">oGV Data</h1>
-           </div>
-         </div>
-       </header>
-
+       
       {/* Main content */}
       <main className="p-3 sm:p-4 md:p-6">
         {/* Global Filters */}
         <div className="bg-white rounded-lg border border-gray-200 shadow-sm mb-4 sm:mb-6 p-3 sm:p-4">
           <div className="flex flex-col xl:flex-row gap-3 sm:gap-4 items-end">
+            {/* Search Bar */}
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Search</label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search form-code, name, email, phone, university..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-300 rounded-md text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
+                />
+              </div>
+            </div>
+            
             <div className="flex-1">
               <label className="block text-sm font-medium text-gray-700 mb-1">LC</label>
               <MultiSelect
@@ -1039,8 +1286,7 @@ export default function AnalyticsPage() {
                   }
                   if (timestamps.length === 0) {
                     // Default to current year months
-                    const now = new Date();
-                    const y = now.getUTCFullYear();
+                    const y = new Date().getUTCFullYear();
                     return Array.from({ length: 12 }, (_, i) => {
                       const d = new Date(Date.UTC(y, 11 - i, 1));
                       const yy = d.getUTCFullYear();
@@ -1073,7 +1319,7 @@ export default function AnalyticsPage() {
             </div>
             <div className="flex-1">
               <label className="block text-sm font-medium text-gray-700 mb-1">Term (Year)</label>
-              <MultiSelect
+              <SingleSelect
                 label="Term"
                 options={Array.from(new Set([
                   ...submissions.map(s => new Date(s.timestamp).getUTCFullYear()),
@@ -1085,8 +1331,9 @@ export default function AnalyticsPage() {
                 ]))
                   .sort((a,b)=> b-a)
                   .map(y => ({ label: String(y), value: String(y) }))}
-                selected={termFilter ? termFilter.split(',') : []}
-                onChange={(vals) => setTermFilter(vals.join(','))}
+                selected={termFilter}
+                onChange={(val) => setTermFilter(val)}
+                placeholder="Select a term"
               />
             </div>
             <div className="flex-1">
@@ -1096,6 +1343,7 @@ export default function AnalyticsPage() {
                 options={phaseRanges.map(p => ({ label: p.code, value: p.code }))}
                 selected={phaseFilter ? phaseFilter.split(',') : []}
                 onChange={(vals) => setPhaseFilter(vals.join(','))}
+                maxSelection={2}
               />
             </div>
             <div className="flex-1 min-w-0">
@@ -1136,15 +1384,121 @@ export default function AnalyticsPage() {
               <button
                 type="button"
                 onClick={() => { 
+                  setSearchTerm('');
                   setLcFilter('all'); 
                   setMonthFilter(''); 
                   setTermFilter(''); 
                   setPhaseFilter(''); 
                   setUtmTermFilter('');
+                  setSelectedMajors([]);
+                  setSelectedYears([]);
+                  setSelectedStartDates([]);
+                  setSelectedReceiveInfo([]);
+                  setSelectedChannels([]);
                 }}
                 className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200"
               >
                 Reset Filters
+              </button>
+            </div>
+          </div>
+          
+          {/* Additional Filter Options Row */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mt-4">
+            {/* Major Filter */}
+            <MultiSelect
+              label="Major"
+              options={[
+                { value: 'Khác', label: 'Khác' },
+                { value: 'Khoa học Máy tính/ Công nghệ thông tin', label: 'Khoa học Máy tính/ Công nghệ thông tin' },
+                { value: 'Kinh tế và Kinh doanh', label: 'Kinh tế và Kinh doanh' },
+                { value: 'Kỹ sư', label: 'Kỹ sư' },
+                { value: 'Ngôn ngữ', label: 'Ngôn ngữ' },
+                { value: 'Tài chính, Kế toán và Kiểm toán', label: 'Tài chính, Kế toán và Kiểm toán' },
+                { value: 'Tiếp thị & Truyền thông', label: 'Tiếp thị & Truyền thông' }
+              ]}
+              selected={selectedMajors}
+              onChange={setSelectedMajors}
+            />
+
+            {/* Year Filter */}
+            <MultiSelect
+              label="Year"
+              options={[
+                { value: 'Đang học Cao học (Thạc sĩ)', label: 'Đang học Cao học (Thạc sĩ)' },
+                { value: 'Gap year', label: 'Gap year' },
+                { value: 'Mới tốt nghiệp dưới 6 tháng', label: 'Mới tốt nghiệp dưới 6 tháng' },
+                { value: 'Năm 1', label: 'Năm 1' },
+                { value: 'Năm 2', label: 'Năm 2' },
+                { value: 'Năm 3', label: 'Năm 3' },
+                { value: 'Năm 4/Năm 5/Năm 6/Khác', label: 'Năm 4/Năm 5/Năm 6/Khác' },
+                { value: 'Tốt nghiệp trên 1 năm', label: 'Tốt nghiệp trên 1 năm' },
+                { value: 'Tốt nghiệp từ 6 tháng đến 1 năm', label: 'Tốt nghiệp từ 6 tháng đến 1 năm' }
+              ]}
+              selected={selectedYears}
+              onChange={setSelectedYears}
+            />
+
+            {/* Start Date Filter */}
+            <MultiSelect
+              label="Start Date"
+              options={[
+                { value: 'Càng sớm càng tốt', label: 'Càng sớm càng tốt' },
+                { value: 'Khác', label: 'Khác' },
+                { value: 'Mình tìm hiểu trước để năm sau đi', label: 'Mình tìm hiểu trước để năm sau đi' },
+                { value: 'Trong vòng 2 - 3 tháng nữa', label: 'Trong vòng 2 - 3 tháng nữa' },
+                { value: 'Trong vòng 3 - 4 tháng nữa', label: 'Trong vòng 3 - 4 tháng nữa' },
+                { value: 'Trong vòng 4 - 5 tháng nữa', label: 'Trong vòng 4 - 5 tháng nữa' }
+              ]}
+              selected={selectedStartDates}
+              onChange={setSelectedStartDates}
+            />
+
+            {/* Receive Info Filter */}
+            <MultiSelect
+              label="Receive Info"
+              options={[
+                { value: 'Có, hãy gửi mình tất cả những thông tin về chương trình của AIESEC cũng như cơ hội từ Đối tác quốc gia', label: 'Chương trình AIESEC & Đối tác quốc gia' },
+                { value: 'Có, hãy gửi mình thông tin cơ hội nghề nghiệp từ Đối tác quốc gia của AIESEC', label: 'Cơ hội nghề nghiệp từ Đối tác quốc gia' },
+                { value: 'Có, hãy gửi mình thông tin những chương trình khác của AIESEC', label: 'Chương trình khác của AIESEC' },
+                { value: 'Không, mình không muốn nhận thông tin nào', label: 'Không muốn nhận thông tin' }
+              ]}
+              selected={selectedReceiveInfo}
+              onChange={setSelectedReceiveInfo}
+            />
+
+            {/* Channel Filter */}
+            <MultiSelect
+              label="Channel"
+              options={[
+                { value: 'Bài đăng trên các Pages Facebook khác', label: 'Bài đăng trên các Pages Facebook khác' },
+                { value: 'Các dự án xã hội của AIESEC (YouthSpeak, Leadership Heading for the Future,....)', label: 'Các dự án xã hội của AIESEC' },
+                { value: 'Các sự kiện hội thảo giới thiệu về chương trình Global Volunteer', label: 'Các sự kiện hội thảo giới thiệu về chương trình Global Volunteer' },
+                { value: 'Email marketing', label: 'Email marketing' },
+                { value: 'Fanpage AIESEC-Global Volunteer: 6 Tuần Tình Nguyện Quốc Tế', label: 'Fanpage AIESEC-Global Volunteer' },
+                { value: 'Fanpage, Instagram, Tiktok của AIESEC in Vietnam', label: 'Fanpage, Instagram, Tiktok của AIESEC in Vietnam' },
+                { value: 'Mình từng là thành viên của AIESEC', label: 'Mình từng là thành viên của AIESEC' },
+                { value: 'Nhóm cộng đồng "Mình đi tình nguyên quốc tế cùng AIESEC"', label: 'Nhóm cộng đồng AIESEC' },
+                { value: 'Thành viên của AIESEC giới thiệu', label: 'Thành viên của AIESEC giới thiệu' },
+                { value: 'Tình nguyện viên từng tham gia Global Volunteer giới thiệu', label: 'Tình nguyện viên từng tham gia Global Volunteer giới thiệu' }
+              ]}
+              selected={selectedChannels}
+              onChange={setSelectedChannels}
+            />
+
+            {/* Clear Additional Filters Button */}
+            <div className="flex items-end">
+              <button
+                onClick={() => {
+                  setSelectedMajors([]);
+                  setSelectedYears([]);
+                  setSelectedStartDates([]);
+                  setSelectedReceiveInfo([]);
+                  setSelectedChannels([]);
+                }}
+                className="w-full px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 text-sm"
+              >
+                Clear Additional Filters
               </button>
             </div>
           </div>
@@ -1209,6 +1563,7 @@ export default function AnalyticsPage() {
                <Settings className="h-3 w-3 sm:h-4 sm:w-4" />
                <span>Manual Allocation</span>
              </button>
+
            </div>
          </div>
 
@@ -1218,19 +1573,7 @@ export default function AnalyticsPage() {
              <h2 className="text-lg font-semibold text-gray-900 mb-4 sm:mb-6">Form Submissions Raw Data</h2>
              <p className="text-sm text-gray-600 mb-4">💡 Click on any cell to copy its content to clipboard</p>
              
-             {/* Search */}
-             <div className="mb-4 sm:mb-6">
-               <div className="relative max-w-md">
-                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                 <input
-                   type="text"
-                   placeholder="Search university..."
-                   value={searchTerm}
-                   onChange={(e) => setSearchTerm(e.target.value)}
-                   className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-300 rounded-md text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
-                 />
-               </div>
-             </div>
+
 
                          {/* Raw Data Table */}
              <div className="overflow-x-auto">
@@ -1560,10 +1903,8 @@ export default function AnalyticsPage() {
                      }}
                      className="border border-gray-300 rounded px-2 py-1 text-sm"
                    >
-                     <option value={25}>25</option>
-                     <option value={50}>50</option>
-                     <option value={100}>100</option>
-                     <option value={200}>200</option>
+                     <option value={5}>5</option>
+                     <option value={10}>10</option>
                    </select>
                  </div>
                  
@@ -1633,19 +1974,7 @@ export default function AnalyticsPage() {
             <h2 className="text-lg font-semibold text-gray-900 mb-6">Cleaned Data (Deduplicated by Phone/Email)</h2>
             <p className="text-sm text-gray-600 mb-4">💡 Click on any cell to copy its content to clipboard</p>
             
-            {/* Search */}
-            <div className="mb-6">
-              <div className="relative max-w-md">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search university..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-300 rounded-md text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
-                />
-              </div>
-            </div>
+
 
             {/* Cleaned Data Table */}
             <div className="overflow-x-auto">
@@ -1701,22 +2030,52 @@ export default function AnalyticsPage() {
                           </span>
                         )}
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-600">{formatDateUtc(submission.timestamp)}</div>
+                      <td className="py-2 px-2 w-24 max-w-30 hidden md:table-cell">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${formatDateUtc(submission.timestamp) || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(formatDateUtc(submission.timestamp) || 'N/A')}
+                        >
+                          {formatDateUtc(submission.timestamp) || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2 w-32 max-w-80">
-                        <div className="text-gray-900 truncate" title={submission.form_code}>{submission.form_code}</div>
+                      <td className="py-2 px-2 max-w-30">
+                        <div 
+                          className="text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.form_code} (Click to copy)`}
+                          onClick={() => copyCellData(submission.form_code)}
+                        >
+                          {submission.form_code}
+                        </div>
                       </td>
-                      <td className="py-2 px-2 w-32 max-w-80">
-                        <div className="font-medium text-gray-900 truncate" title={submission.name || 'N/A'}>{submission.name || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-30">
+                        <div 
+                          className="font-medium text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.name || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.name || 'N/A')}
+                        >
+                          {submission.name || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2 w-24 max-w-80">
-                        <div className="text-gray-600 truncate" title={submission.birth || 'N/A'}>{submission.birth || 'N/A'}</div>
+                      <td className="py-2 px-2 w-24 max-w-20">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.birth || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.birth || 'N/A')}
+                        >
+                          {submission.birth || 'N/A'}
+                        </div>
                       </td>
-                                             <td className="py-2 px-2 w-32 max-w-80">
-                         <div className="text-gray-600 truncate" title={submission.fb || 'N/A'}>{submission.fb || 'N/A'}</div>
-                       </td>
-                      <td className="py-2 px-2 w-32 max-w-80">
+                      <td className="py-2 px-2 w-32 max-w-40">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.fb || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.fb || 'N/A')}
+                        > 
+                          {submission.fb || 'N/A'}
+                        </div>
+                      </td>
+                      <td className="py-2 px-2 w-32 max-w-50">
                         <div 
                           className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
                           title={`${submission.phone || 'N/A'} (Click to copy)`}
@@ -1725,9 +2084,15 @@ export default function AnalyticsPage() {
                           {submission.phone || 'N/A'}
                         </div>
                       </td>
-                                             <td className="py-2 px-2 w-48 max-w-48">
-                         <div className="text-gray-600 truncate" title={submission.email || 'N/A'}>{submission.email || 'N/A'}</div>
-                       </td>
+                      <td className="py-2 px-2 w-48 max-w-40">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.email || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.email || 'N/A')}
+                        >
+                          {submission.email || 'N/A'}
+                        </div>
+                      </td>
                       <td className="py-2 px-2 w-32 max-w-32">
                         <div 
                           className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
@@ -1737,68 +2102,210 @@ export default function AnalyticsPage() {
                           {submission.livewhere || 'N/A'}
                         </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="font-medium text-gray-900">{submission.uni || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-25">
+                        <div 
+                          className="font-medium text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.uni || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.uni || 'N/A')}
+                        >
+                          {submission.uni || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-600">{submission.other_uni || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-40">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.other_uni || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.other_uni || 'N/A')}
+                        >
+                          {submission.other_uni || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-600">{submission.other_uni_2 || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-20">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.other_uni_2 || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.other_uni_2 || 'N/A')}
+                        >
+                          {submission.other_uni_2 || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-900">{submission.UniversityYear}</div>
+                      <td className="py-2 px-2 max-w-30">
+                        <div 
+                          className="text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.UniversityYear} (Click to copy)`}
+                          onClick={() => copyCellData(submission.UniversityYear)}
+                        >
+                          {submission.UniversityYear}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-600">{submission.Major || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-20">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.Major || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.Major || 'N/A')}
+                        >
+                          {submission.Major || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-600">{submission.startdate || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-30">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.startdate || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.startdate || 'N/A')}
+                        >
+                          {submission.startdate || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-600">{submission.enddate || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-20">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.enddate || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.enddate || 'N/A')}
+                        >
+                          {submission.enddate || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-900">{submission.Channel}</div>
+                      <td className="py-2 px-2 max-w-20">
+                        <div 
+                          className="text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.Channel} (Click to copy)`}
+                          onClick={() => copyCellData(submission.Channel)}
+                        >
+                          {submission.Channel}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-600">{submission.url_ogta || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-20">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.url_ogta || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.url_ogta || 'N/A')}
+                        >
+                          {submission.url_ogta || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-600">{submission.formDate || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-20">
+                        <div 
+                          className="text-gray-600 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.formDate || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.formDate || 'N/A')}
+                        >
+                          {submission.formDate || 'N/A'}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-900">{submission.promoteLeadership}</div>
+                      <td className="py-2 px-2 max-w-20">
+                        <div 
+                          className="text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.promoteLeadership} (Click to copy)`}
+                          onClick={() => copyCellData(submission.promoteLeadership)}
+                        >
+                          {submission.promoteLeadership}
+                        </div>
                       </td>
-                                             <td className="py-2 px-2 w-64 max-w-64 align-top">
-                         <div className="text-gray-900 truncate" title={submission.ReceiveInformation}>{submission.ReceiveInformation}</div>
+                        <td className="py-2 px-2 w-64 align-top max-w-20">
+                         <div 
+                          className="text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.ReceiveInformation} (Click to copy)`}
+                          onClick={() => copyCellData(submission.ReceiveInformation)}
+                        >
+                          {submission.ReceiveInformation}
+                        </div>
                        </td>
-                      <td className="py-2 px-2 w-48">
-                        <div className="text-gray-900">{submission.Demand}</div>
+                      <td className="py-2 px-2 max-w-20">
+                        <div 
+                          className="text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded" 
+                          title={`${submission.Demand} (Click to copy)`}
+                          onClick={() => copyCellData(submission.Demand)}
+                        >
+                          {submission.Demand}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-900">{submission.categorize}</div>
+                      <td className="py-2 px-2 max-w-[10rem]">
+                        <div
+                          className="text-gray-900 truncate cursor-pointer hover:bg-gray-100 p-1 rounded"
+                          title={`${submission.categorize || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.categorize || 'N/A')}
+                        >
+                          {submission.categorize && submission.categorize.length > 30
+                            ? submission.categorize.slice(0, 30) + '...'
+                            : (submission.categorize || 'N/A')}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-500">{submission.utm_source || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-[8rem]">
+                        <div
+                          className="text-gray-500 truncate cursor-pointer hover:bg-gray-100 p-1 rounded"
+                          title={`${submission.utm_source || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.utm_source || 'N/A')}
+                        >
+                          {submission.utm_source && submission.utm_source.length > 20
+                            ? submission.utm_source.slice(0, 20) + '...'
+                            : (submission.utm_source || 'N/A')}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-500">{submission.utm_medium || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-[8rem]">
+                        <div
+                          className="text-gray-500 truncate cursor-pointer hover:bg-gray-100 p-1 rounded"
+                          title={`${submission.utm_medium || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.utm_medium || 'N/A')}
+                        >
+                          {submission.utm_medium && submission.utm_medium.length > 20
+                            ? submission.utm_medium.slice(0, 20) + '...'
+                            : (submission.utm_medium || 'N/A')}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-500">{submission.utm_campaign || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-[10rem]">
+                        <div
+                          className="text-gray-500 truncate cursor-pointer hover:bg-gray-100 p-1 rounded"
+                          title={`${submission.utm_campaign || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.utm_campaign || 'N/A')}
+                        >
+                          {submission.utm_campaign && submission.utm_campaign.length > 25
+                            ? submission.utm_campaign.slice(0, 25) + '...'
+                            : (submission.utm_campaign || 'N/A')}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-500">{submission.utm_id || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-[8rem]">
+                        <div
+                          className="text-gray-500 truncate cursor-pointer hover:bg-gray-100 p-1 rounded"
+                          title={`${submission.utm_id || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.utm_id || 'N/A')}
+                        >
+                          {submission.utm_id && submission.utm_id.length > 20
+                            ? submission.utm_id.slice(0, 20) + '...'
+                            : (submission.utm_id || 'N/A')}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-500">{submission.utm_content || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-[10rem]">
+                        <div
+                          className="text-gray-500 truncate cursor-pointer hover:bg-gray-100 p-1 rounded"
+                          title={`${submission.utm_content || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.utm_content || 'N/A')}
+                        >
+                          {submission.utm_content && submission.utm_content.length > 25
+                            ? submission.utm_content.slice(0, 25) + '...'
+                            : (submission.utm_content || 'N/A')}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-500">{submission.utm_name || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-[10rem]">
+                        <div
+                          className="text-gray-500 truncate cursor-pointer hover:bg-gray-100 p-1 rounded"
+                          title={`${submission.utm_name || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.utm_name || 'N/A')}
+                        >
+                          {submission.utm_name && submission.utm_name.length > 25
+                            ? submission.utm_name.slice(0, 25) + '...'
+                            : (submission.utm_name || 'N/A')}
+                        </div>
                       </td>
-                      <td className="py-2 px-2">
-                        <div className="text-gray-500">{submission.utm_term || 'N/A'}</div>
+                      <td className="py-2 px-2 max-w-[8rem]">
+                        <div
+                          className="text-gray-500 truncate cursor-pointer hover:bg-gray-100 p-1 rounded"
+                          title={`${submission.utm_term || 'N/A'} (Click to copy)`}
+                          onClick={() => copyCellData(submission.utm_term || 'N/A')}
+                        >
+                          {submission.utm_term && submission.utm_term.length > 20
+                            ? submission.utm_term.slice(0, 20) + '...'
+                            : (submission.utm_term || 'N/A')}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1814,7 +2321,25 @@ export default function AnalyticsPage() {
 
             {/* Pagination for Cleaned Data */}
             {filteredCleanedData.length > 0 && (
-              <div className="mt-6 flex flex-col items-center space-y-4">
+              <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600">Items per page:</span>
+                  <select
+                    value={itemsPerPageCleaned}
+                    onChange={(e) => {
+                      setItemsPerPageCleaned(Number(e.target.value));
+                      setCurrentPageCleaned(1);
+                    }}
+                    className="border border-gray-300 rounded px-2 py-1 text-sm"
+                  >
+                    <option value={5}>5</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={200}>200</option>
+                  </select>
+                </div>
+                
                 <div className="flex items-center space-x-2">
                   <button
                     onClick={() => setCurrentPageCleaned(Math.max(1, currentPageCleaned - 1))}
@@ -1882,31 +2407,17 @@ export default function AnalyticsPage() {
              <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-8">
                <h2 className="text-lg font-semibold text-gray-900 mb-6">Manual Allocation</h2>
                
-               {/* Search and Filter */}
-               <div className="flex flex-col md:flex-row gap-4 mb-6">
-                 <div className="flex-1">
-                   <div className="relative">
-                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                     <input
-                       type="text"
-                       placeholder="Search university, other_uni, other_uni_2..."
-                       value={searchTerm}
-                       onChange={(e) => setSearchTerm(e.target.value)}
-                       className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-300 rounded-md text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
-                     />
-                   </div>
-                 </div>
-                 <div className="flex items-center space-x-2">
-                   <Filter className="h-4 w-4 text-gray-400" />
-                   <span className="text-gray-700 text-sm">
-                     {filteredSubmissions.length} unmapped submissions
-                     {selectedSubmissions.size > 0 && (
-                       <span className="ml-2 text-blue-600 font-medium">
-                         ({selectedSubmissions.size} selected)
-                       </span>
-                     )}
-                   </span>
-                 </div>
+               {/* Filter Info */}
+               <div className="flex items-center space-x-2 mb-6">
+                 <Filter className="h-4 w-4 text-gray-400" />
+                 <span className="text-gray-700 text-sm">
+                   {filteredSubmissions.length} unmapped submissions
+                   {selectedSubmissions.size > 0 && (
+                     <span className="ml-2 text-blue-600 font-medium">
+                       ({selectedSubmissions.size} selected)
+                     </span>
+                   )}
+                 </span>
                </div>
 
                {/* Bulk Allocation Controls */}
@@ -2079,7 +2590,25 @@ export default function AnalyticsPage() {
 
                {/* Pagination for Manual Allocation */}
                {filteredSubmissions.length > 0 && (
-                 <div className="mt-6 flex flex-col items-center space-y-4">
+                 <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+                   <div className="flex items-center gap-2">
+                     <span className="text-sm text-gray-600">Items per page:</span>
+                     <select
+                       value={itemsPerPageManual}
+                       onChange={(e) => {
+                         setItemsPerPageManual(Number(e.target.value));
+                         setCurrentPageManual(1);
+                       }}
+                       className="border border-gray-300 rounded px-2 py-1 text-sm"
+                     >
+                       <option value={5}>5</option>
+                       <option value={25}>25</option>
+                       <option value={50}>50</option>
+                       <option value={100}>100</option>
+                       <option value={200}>200</option>
+                     </select>
+                   </div>
+                   
                    <div className="flex items-center space-x-2">
                      <button
                        onClick={() => setCurrentPageManual(Math.max(1, currentPageManual - 1))}
@@ -2276,6 +2805,8 @@ export default function AnalyticsPage() {
              </div>
           </>
         )}
+
+
       </main>
     </div>
   );

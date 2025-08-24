@@ -4,20 +4,18 @@ import React, { useMemo, useRef, useState, useEffect } from "react";
 
 type Option = { label: string; value: string };
 
-export default function MultiSelect({
+export default function SingleSelect({
 	label,
 	options,
 	selected,
 	onChange,
-	showOnly = false,
-	maxSelection,
+	placeholder = "Select an option",
 }: {
 	label: string;
 	options: Option[];
-	selected: string[];
-	onChange: (values: string[]) => void;
-	showOnly?: boolean;
-	maxSelection?: number;
+	selected: string;
+	onChange: (value: string) => void;
+	placeholder?: string;
 }) {
 	const [open, setOpen] = useState(false);
 	const [query, setQuery] = useState("");
@@ -38,20 +36,7 @@ export default function MultiSelect({
 		return options.filter((o) => o.label.toLowerCase().includes(q));
 	}, [options, query]);
 
-	const toggle = (val: string) => {
-		if (selected.includes(val)) {
-			onChange(selected.filter((v) => v !== val));
-		} else {
-			// Check if adding this value would exceed the maximum selection limit
-			if (maxSelection && selected.length >= maxSelection) {
-				// Remove the oldest selection and add the new one
-				const newSelected = [...selected.slice(1), val];
-				onChange(newSelected);
-			} else {
-				onChange([...selected, val]);
-			}
-		}
-	};
+	const selectedOption = options.find(option => option.value === selected);
 
 	return (
 		<div ref={containerRef} className="relative inline-block min-w-[12rem] sm:min-w-[14rem]">
@@ -62,8 +47,7 @@ export default function MultiSelect({
 			>
 				<span className="font-medium mr-2 truncate">{label}</span>
 				<span className="text-xs sm:text-sm text-gray-500 truncate">
-					{selected.length > 0 ? `${selected.length} selected` : "Select"}
-					{maxSelection && ` (max ${maxSelection})`}
+					{selectedOption ? selectedOption.label : placeholder}
 				</span>
 				<svg className="ml-auto h-4 w-4 text-gray-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.083l3.71-3.85a.75.75 0 111.08 1.04l-4.24 4.4a.75.75 0 01-1.08 0l-4.24-4.4a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
 			</button>
@@ -73,11 +57,6 @@ export default function MultiSelect({
 						<div className="flex items-center gap-2">
 							<span className="font-medium">{label}</span>
 						</div>
-						{maxSelection && (
-							<span className="text-xs text-gray-500">
-								{selected.length}/{maxSelection}
-							</span>
-						)}
 					</div>
 					<div className="p-2">
 						<div className="relative">
@@ -91,44 +70,26 @@ export default function MultiSelect({
 						</div>
 					</div>
 					<div className="max-h-64 overflow-auto">
-						{filtered.map((o) => {
-							const isSelected = selected.includes(o.value);
-							const isDisabled = !isSelected && maxSelection && selected.length >= maxSelection;
-							
-							return (
-								<label 
-									key={o.value} 
-									className={`flex items-center justify-between px-3 py-2 border-t border-gray-100 cursor-pointer hover:bg-gray-50 ${
-										isDisabled ? 'opacity-50 cursor-not-allowed' : ''
-									}`}
-								>
-									<div className="flex items-center gap-3">
-										<input
-											type="checkbox"
-											checked={isSelected}
-											onChange={() => {
-												if (!isDisabled) {
-													toggle(o.value);
-												}
-											}}
-											className="h-4 w-4"
-											disabled={Boolean(isDisabled)}
-										/>
-										<span>{o.label}</span>
-									</div>
-									{showOnly && (
-										<button
-											type="button"
-											onClick={(e) => { e.preventDefault(); e.stopPropagation(); onChange([o.value]); }}
-											className="text-xs uppercase px-2 py-1 border border-gray-300 rounded hover:bg-gray-100 text-gray-700"
-											title="only"
-										>
-											ONLY
-										</button>
-									)}
-								</label>
-							);
-						})}
+						{filtered.map((o) => (
+							<label 
+								key={o.value} 
+								className="flex items-center justify-between px-3 py-2 border-t border-gray-100 cursor-pointer hover:bg-gray-50"
+							>
+								<div className="flex items-center gap-3">
+									<input
+										type="radio"
+										name={label}
+										checked={selected === o.value}
+										onChange={() => {
+											onChange(o.value);
+											setOpen(false);
+										}}
+										className="h-4 w-4"
+									/>
+									<span>{o.label}</span>
+								</div>
+							</label>
+						))}
 						{filtered.length === 0 && (
 							<div className="px-3 py-6 text-sm text-gray-500">No options</div>
 						)}
@@ -138,5 +99,3 @@ export default function MultiSelect({
 		</div>
 	);
 }
-
-

@@ -1,30 +1,84 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { BarChart3, TrendingUp, Users, Settings, X, Menu, FileText, LogOut } from 'lucide-react';
-import { usePathname } from 'next/navigation';
-import { useRouter } from 'next/navigation';
-import { signOut } from '@/lib/supabase';
+import { useState, useEffect } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
+import { 
+  BarChart3, 
+  Users, 
+  TrendingUp, 
+  Settings, 
+  LogOut, 
+  Search,
+  Bell,
+  User,
+  Menu,
+  Database,
+  ClipboardList
+} from 'lucide-react';
+import { getCurrentUser, signOut, supabase } from '@/lib/supabase';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
+  const [user, setUser] = useState<any>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
 
   useEffect(() => {
-    const open = () => setSidebarOpen(true);
-    const close = () => setSidebarOpen(false);
-    const toggle = () => setSidebarOpen((v) => !v);
-    window.addEventListener('sidebar:open', open as any);
-    window.addEventListener('sidebar:close', close as any);
-    window.addEventListener('sidebar:toggle', toggle as any);
+    checkUser();
+    
+    // Listen for sidebar toggle events
+    const handleSidebarToggle = () => {
+      setSidebarOpen(prev => !prev);
+    };
+    
+    window.addEventListener('sidebar:toggle', handleSidebarToggle);
+    
     return () => {
-      window.removeEventListener('sidebar:open', open as any);
-      window.removeEventListener('sidebar:close', close as any);
-      window.removeEventListener('sidebar:toggle', toggle as any);
+      window.removeEventListener('sidebar:toggle', handleSidebarToggle);
     };
   }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      if (!target.closest('.profile-dropdown')) {
+        setProfileDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const checkUser = async () => {
+    try {
+      const currentUser = await getCurrentUser();
+      if (!currentUser) {
+        router.push('/auth/login');
+        return;
+      }
+
+      // Get user profile to check role
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('id, role, full_name, email, status')
+        .eq('id', currentUser.id)
+        .single();
+
+      setUser(currentUser);
+      setUserProfile(profile);
+    } catch (error) {
+      router.push('/auth/login');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSignOut = async () => {
     try {
@@ -35,8 +89,111 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   };
 
+  // Function to get page title based on pathname
+  const getPageTitle = () => {
+    switch (pathname) {
+      case '/dashboard':
+        return 'Dashboard';
+      case '/dashboard/analytics':
+        return 'Analytics';
+      case '/dashboard/users':
+        return 'Users';
+      case '/dashboard/settings':
+        return 'Settings';
+      case '/dashboard/ogv-data':
+        return 'oGV Data';
+      case '/dashboard/ogv-data/crm':
+        return 'CRM';
+      default:
+        return 'Dashboard';
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-bl from-[#f3f4f6] to-[#e5e7eb]">
+        <img src="/giphy.gif" alt="Loading..." className="h-32 w-32 object-contain" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen relative">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200">
+        <div className="flex items-center justify-between px-3 sm:px-4 md:px-6 py-3 sm:py-4">
+          <div className="flex items-center space-x-2 sm:space-x-3">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-2 rounded-md hover:bg-gray-100 text-gray-700"
+              aria-label="Toggle sidebar"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <h1 className="text-lg sm:text-xl font-semibold text-gray-900 truncate">
+              {getPageTitle()}
+            </h1>
+          </div>
+
+          <div className="flex items-center space-x-2 sm:space-x-4">
+            {/* Search */}
+            <div className="relative hidden sm:block">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search..."
+                className="pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+              />
+            </div>
+
+            {/* Notifications */}
+            <button className="p-2 rounded-md hover:bg-gray-100 text-gray-700 relative">
+              <Bell className="h-5 w-5" />
+              <span className="absolute -top-1 -right-1 h-3 w-3 bg-red-500 rounded-full"></span>
+            </button>
+
+            {/* Profile Dropdown */}
+            <div className="relative profile-dropdown">
+              <button
+                onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
+                className="flex items-center space-x-2 p-2 rounded-md hover:bg-gray-100 text-gray-700"
+              >
+                <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center">
+                  <User className="h-4 w-4 text-white" />
+                </div>
+                <span className="hidden sm:block text-sm font-medium text-gray-900">
+                  {userProfile?.full_name || user?.email}
+                </span>
+              </button>
+
+              {profileDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg border border-gray-200 z-50">
+                  <div className="py-1">
+                    <button
+                      onClick={() => {
+                        setProfileDropdownOpen(false);
+                        router.push('/dashboard/settings');
+                      }}
+                      className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      <Settings className="h-4 w-4 mr-2" />
+                      Settings
+                    </button>
+                    <button
+                      onClick={handleSignOut}
+                      className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      <LogOut className="h-4 w-4 mr-2" />
+                      Sign Out
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
+
       {/* Sidebar */}
       <aside
         className={`fixed inset-y-0 left-0 z-50 w-64 sm:w-72 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out ${
@@ -45,92 +202,90 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         aria-hidden={!sidebarOpen}
       >
         <div className="flex flex-col h-full">
-          <div className="flex items-center justify-between p-3 sm:p-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900 truncate">Navigation</h2>
+          {/* Sidebar Header */}
+          <div className="flex items-center justify-between p-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-900">Navigation</h2>
             <button
               onClick={() => setSidebarOpen(false)}
-              className="p-1 rounded-md hover:bg-gray-100 text-gray-700 flex-shrink-0"
+              className="p-2 rounded-md hover:bg-gray-100 text-gray-700"
               aria-label="Close sidebar"
             >
-              <X className="h-4 w-4" />
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
           </div>
-          <nav className="space-y-2">
-            <div className="px-2 sm:px-3 py-2">
-              <div className="space-y-1">
-                {/* oGV Hub with sub-pages */}
-                <div className="space-y-1">
-                  <div className="px-3 py-2 text-sm font-medium text-muted-foreground">
-                    oGV Hub
-                  </div>
-                  <button
-                    onClick={() => router.push('/dashboard')}
-                    className={`w-full flex items-center px-4 sm:px-6 py-2 text-sm rounded-md transition-colors ${
-                      pathname === '/dashboard' 
-                        ? 'bg-primary text-primary-foreground' 
-                        : 'hover:bg-accent hover:text-accent-foreground'
-                    }`}
-                  >
-                    <BarChart3 className="mr-2 h-4 w-4 flex-shrink-0" />
-                    <span className="truncate">oGV Dashboard</span>
-                  </button>
-                  <button
-                    onClick={() => router.push('/dashboard/ogv-data')}
-                    className={`w-full flex items-center px-4 sm:px-6 py-2 text-sm rounded-md transition-colors ${
-                      pathname === '/dashboard/ogv-data' 
-                        ? 'bg-primary text-primary-foreground' 
-                        : 'hover:bg-accent hover:text-accent-foreground'
-                    }`}
-                  >
-                    <FileText className="mr-2 h-4 w-4 flex-shrink-0" />
-                    <span className="truncate">oGV Data</span>
-                  </button>
-                  <button
-                    onClick={() => router.push('/dashboard/analytics')}
-                    className={`w-full flex items-center px-4 sm:px-6 py-2 text-sm rounded-md transition-colors ${
-                      pathname === '/dashboard/analytics' 
-                        ? 'bg-primary text-primary-foreground' 
-                        : 'hover:bg-accent hover:text-accent-foreground'
-                    }`}
-                  >
-                    <TrendingUp className="mr-2 h-4 w-4 flex-shrink-0" />
-                    <span className="truncate">Analytics</span>
-                  </button>
-                </div>
 
-                <button
-                  onClick={() => router.push('/dashboard/users')}
-                  className={`w-full flex items-center px-3 py-2 text-sm rounded-md transition-colors ${
-                    pathname === '/dashboard/users' 
-                      ? 'bg-primary text-primary-foreground' 
-                      : 'hover:bg-accent hover:text-accent-foreground'
-                  }`}
+          {/* Sidebar Navigation */}
+          <nav className="flex-1 p-4 space-y-2">
+            
+            {/* oGV Hub Section */}
+            <div className="pt-4 pb-2">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">oGV Hub</h3>
+              <div className="space-y-1">
+                <a
+                  href="/dashboard"
+                  className="flex items-center space-x-3 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100 hover:text-gray-900 text-sm"
                 >
-                  <Users className="mr-2 h-4 w-4 flex-shrink-0" />
-                  <span className="truncate">Users</span>
-                </button>
-                <button
-                  onClick={() => router.push('/dashboard/settings')}
-                  className={`w-full flex items-center px-3 py-2 text-sm rounded-md transition-colors ${
-                    pathname === '/dashboard/settings' 
-                      ? 'bg-primary text-primary-foreground' 
-                      : 'hover:bg-accent hover:text-accent-foreground'
-                  }`}
+                  <BarChart3 className="h-4 w-4" />
+                  <span>Dashboard</span>
+                </a>
+                <a
+                  href="/dashboard/analytics"
+                  className="flex items-center space-x-3 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100 hover:text-gray-900 text-sm"
                 >
-                  <Settings className="mr-2 h-4 w-4 flex-shrink-0" />
-                  <span className="truncate">Settings</span>
-                </button>
+                  <TrendingUp className="h-4 w-4" />
+                  <span>Analytics</span>
+                </a>
+                <a
+                  href="/dashboard/ogv-data"
+                  className="flex items-center space-x-3 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100 hover:text-gray-900 text-sm"
+                >
+                  <Database className="h-4 w-4" />
+                  <span>oGV Data</span>
+                </a>
+                <a
+                  href="/dashboard/ogv-data/crm"
+                  className="flex items-center space-x-3 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100 hover:text-gray-900 text-sm"
+                >
+                  <ClipboardList className="h-4 w-4" />
+                  <span>CRM</span>
+                </a>
               </div>
             </div>
+            
+            {/* Settings Section */}
+            <div className="pt-4 pb-2">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Settings</h3>
+              <a
+                href="/dashboard/settings"
+                className="flex items-center space-x-3 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100 hover:text-gray-900 text-sm"
+              >
+                <Settings className="h-4 w-4" />
+                <span>Settings</span>
+              </a>
+            </div>
+            
+            {userProfile?.role === 'admin' && (
+              <div className="pt-4 pb-2">
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Admin</h3>
+                <a
+                  href="/dashboard/users"
+                  className="flex items-center space-x-3 px-3 py-2 rounded-md text-gray-700 hover:bg-gray-100 hover:text-gray-900 text-sm"
+                >
+                  <Users className="h-4 w-4" />
+                  <span>Users</span>
+                </a>
+              </div>
+            )}
           </nav>
-          <div className="mt-auto p-3 border-t border-gray-200">
-            <button
-              onClick={handleSignOut}
-              className="w-full flex items-center px-4 sm:px-6 py-2 text-sm rounded-md transition-colors hover:bg-accent hover:text-accent-foreground"
-            >
-              <LogOut className="mr-2 h-4 w-4 flex-shrink-0" />
-              <span className="truncate">Sign Out</span>
-            </button>
+
+          {/* Sidebar Footer */}
+          <div className="p-4 border-t border-gray-200">
+            <div className="text-sm text-gray-600">
+              <p>Logged in as:</p>
+              <p className="font-medium text-gray-900 truncate">{userProfile?.full_name || user?.email}</p>
+            </div>
           </div>
         </div>
       </aside>
@@ -139,10 +294,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className={`transition-all duration-300 ${sidebarOpen ? 'pl-64 sm:pl-72' : 'pl-0'}`}>
         {children}
       </div>
-
-      {/* No floating toggle; pages trigger via custom events to place button next to their titles */}
     </div>
   );
 }
-
-

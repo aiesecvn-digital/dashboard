@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { getCurrentUser, signOut, supabase } from '@/lib/supabase';
 import MultiSelect from '@/components/MultiSelect';
+import SingleSelect from '@/components/SingleSelect';
 
 interface LCStats {
   lc: string;
@@ -47,12 +48,18 @@ interface SummaryRow {
   notFound: number;       // has UTM but missing utm_source (not EMT)
 }
 
+interface LCInfo {
+  lc_code: string;
+  goal: number;
+  universities_count: number;
+  users_count: number;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [lcStats, setLcStats] = useState<LCStats[]>([]);
   const [lcGoals, setLcGoals] = useState<Record<string, number>>({});
   const [totalStats, setTotalStats] = useState({
@@ -81,6 +88,7 @@ export default function DashboardPage() {
   const [compareMsuByPhase, setCompareMsuByPhase] = useState<Record<string, Record<string, number>>>({});
   const [compareTotalsByPhase, setCompareTotalsByPhase] = useState<Record<string, number>>({});
   const [compareLoading, setCompareLoading] = useState<boolean>(false);
+  const [lcInfo, setLcInfo] = useState<LCInfo[]>([]);
 
   // Helper functions for calculations
   const calculateProgress = (total: number, goal: number) => {
@@ -104,23 +112,7 @@ export default function DashboardPage() {
     checkUser();
   }, []);
 
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Element;
-      if (!target.closest('.profile-dropdown')) {
-        setProfileDropdownOpen(false);
-      }
-    };
 
-    if (profileDropdownOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [profileDropdownOpen]);
 
   // Load UTM links when component mounts
   useEffect(() => {
@@ -138,7 +130,6 @@ export default function DashboardPage() {
         .limit(1);
       
       if (tableError) {
-        console.error('Error checking table structure:', tableError);
         setUtmLinksByLc({});
         return;
       }
@@ -193,7 +184,7 @@ export default function DashboardPage() {
       // Get user profile to check role
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('*')
+        .select('id, role, full_name, email, status')
         .eq('id', currentUser.id)
         .single();
 
@@ -210,6 +201,19 @@ export default function DashboardPage() {
             .order('half', { ascending: false });
           setPhaseRanges((phases as any[] || []).map(p => ({ code: String(p.code), start: p.start_date ?? null, end: p.end_date ?? null })));
           setPhasesMeta((phases as any[] || []).map(p => ({ code: String(p.code), term: Number(p.term), half: Number(p.half), start: p.start_date ?? null, end: p.end_date ?? null })));
+          
+          // Set default phase filter to the phase with the latest end date
+          if (phases && phases.length > 0) {
+            const phasesWithEndDate = phases.filter(p => p.end_date !== null);
+            if (phasesWithEndDate.length > 0) {
+              const latestPhase = phasesWithEndDate.reduce((latest, current) => {
+                const latestDate = new Date(latest.end_date);
+                const currentDate = new Date(current.end_date);
+                return currentDate > latestDate ? current : latest;
+              });
+              setPhaseFilter(latestPhase.code);
+            }
+          }
         } catch {}
       }
     } catch (error) {
@@ -222,7 +226,24 @@ export default function DashboardPage() {
 
   // Recompute stats when filters change using cached submissions
   useEffect(() => {
-    if (!allSubmissionsState || allSubmissionsState.length === 0) return;
+    if (!allSubmissionsState || allSubmissionsState.length === 0) {
+      // Even when there are no submissions, we should still show LC information
+      const emptyLcStats: LCStats[] = lcInfo.map(lc => ({
+        lc: lc.lc_code,
+        total_forms: 0,
+        ye_count: 0,
+        apd_count: 0,
+        re_count: 0
+      }));
+      setLcStats(emptyLcStats);
+      setTotalStats({ totalForms: 0, totalYE: 0, totalAPD: 0, totalRE: 0 });
+      setNationalByLc([]);
+      setOrganicByLc([]);
+      setNationalTotal(0);
+      setOrganicTotal(0);
+      return;
+    }
+
     (async () => {
       const lcData: { [key: string]: LCStats } = {};
       const nationalMap: Record<string, number> = {};
@@ -262,9 +283,8 @@ export default function DashboardPage() {
         
         // Debug: Check Other allocations
 
-        const form = submission?.form_data || {};
-        const utm_source = getVal(submission, ['utm_source']) || getVal(form, ['utm_source', 'utmSource']);
-        const utm_term = (getVal(submission, ['utm_term']) || getVal(form, ['utm_term', 'utmTerm'])).toString();
+        const utm_source = getVal(submission, ['utm_source']);
+        const utm_term = getVal(submission, ['utm_term']).toString();
         const hasAnyUtm = [utm_source, getVal(submission, ['utm_medium']), getVal(submission, ['utm_campaign']), getVal(submission, ['utm_id']), getVal(submission, ['utm_content']), getVal(submission, ['utm_name']), utm_term].some(v => v && String(v).trim() !== '');
         // Check if UTM term matches registered EMT UTM links
         const emtUtmLinks = utmLinksByLc['EMT'] || [];
@@ -297,10 +317,22 @@ export default function DashboardPage() {
         row._notFound = (row._notFound || 0) + (isNotFound ? 1 : 0);
       });
 
-             const sortedStats = Object.values(lcData)
-         .filter(stat => stat.lc !== 'Organic')
-         .sort((a, b) => b.total_forms - a.total_forms);
-      
+      // Ensure all LCs from lcInfo are included, even if they have no forms
+      lcInfo.forEach(lc => {
+        if (!lcData[lc.lc_code]) {
+          lcData[lc.lc_code] = {
+            lc: lc.lc_code,
+            total_forms: 0,
+            ye_count: 0,
+            apd_count: 0,
+            re_count: 0
+          };
+        }
+      });
+
+      const sortedStats = Object.values(lcData)
+        .filter(stat => stat.lc !== 'Organic')
+        .sort((a, b) => b.total_forms - a.total_forms);
       
       setLcStats(sortedStats);
       // Calculate totals including Organic
@@ -330,8 +362,7 @@ export default function DashboardPage() {
           const { data: goalRowsPhase } = await supabase.from('lc_goals_phase').select('lc_code, goal, phase_code').in('phase_code', codes as any);
           if (goalRowsPhase) for (const r of goalRowsPhase as any[]) goalsByLc[String(r.lc_code)] = (goalsByLc[String(r.lc_code)] || 0) + (Number(r.goal) || 0);
         } else if (termFilter) {
-          const years = new Set(termFilter.split(',').filter(Boolean));
-          const target = phasesMeta.filter(p => years.has(String(p.term))).map(p => p.code);
+          const target = phasesMeta.filter(p => String(p.term) === termFilter).map(p => p.code);
           if (target.length > 0) {
             const { data: goalRowsPhases } = await supabase.from('lc_goals_phase').select('lc_code, goal, phase_code').in('phase_code', target as any);
             if (goalRowsPhases) for (const r of goalRowsPhases as any[]) goalsByLc[String(r.lc_code)] = (goalsByLc[String(r.lc_code)] || 0) + (Number(r.goal) || 0);
@@ -371,7 +402,7 @@ export default function DashboardPage() {
       // Wait a bit to ensure goals are properly set before calculating summary
       await new Promise(resolve => setTimeout(resolve, 100));
     })();
-  }, [termFilter, phaseFilter, phasesMeta, allSubmissionsState]);
+  }, [termFilter, phaseFilter, phasesMeta, allSubmissionsState, lcInfo]);
 
   // Separate useEffect to calculate summary when goals and data are ready
   useEffect(() => {
@@ -391,8 +422,7 @@ export default function DashboardPage() {
       if (!termFilter) return true;
       try {
         const y = new Date(s.timestamp).getUTCFullYear();
-        const set = new Set(termFilter.split(',').filter(Boolean));
-        return set.has(String(y));
+        return String(y) === termFilter;
       } catch { return true; }
     };
     const matchesPhase = (s: any) => {
@@ -414,8 +444,7 @@ export default function DashboardPage() {
     
     // First, count total forms per LC
     filteredSubmissions.forEach(submission => {
-      const formData = submission.form_data || {};
-      const university = getVal(formData, ['university', 'University', 'uni', 'Uni', 'other_uni', 'other_uni_2']);
+      const university = getVal(submission, ['uni', 'university', 'University', 'Uni', 'other_uni', 'other_uni_2']);
       const resolvedLc = resolveLcFromUniversity(university);
       const lc = resolvedLc || submission.allocated_lc || 'Organic';
       totalFormsByLc.set(lc, (totalFormsByLc.get(lc) || 0) + 1);
@@ -423,11 +452,8 @@ export default function DashboardPage() {
     
     // Calculate MSUs: Count ALL forms with UTM Term matching ANY registered UTM links
     filteredSubmissions.forEach(submission => {
-      const formData = submission.form_data || {};
-      
-      // Get UTM Term from form data
-      const utmTerm = getVal(formData, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) || 
-                     getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
+      // Get UTM Term from submission
+      const utmTerm = getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
       
       if (utmTerm) {
         // Check which LC this UTM Term belongs to
@@ -453,9 +479,7 @@ export default function DashboardPage() {
     const emtOrganicByLc = new Map<string, number>();
     
     filteredSubmissions.forEach(submission => {
-      const formData = submission.form_data || {};
-      const utmTerm = getVal(formData, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) || 
-                     getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
+      const utmTerm = getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
       
       // Check if form is allocated to any LC
       if (submission.allocated_lc && submission.allocated_lc !== 'Other') {
@@ -482,16 +506,13 @@ export default function DashboardPage() {
     
     // Special debug for Danang
     const danangFormsWithUtmTerm = filteredSubmissions.filter(submission => {
-      const formData = submission.form_data || {};
-      const university = getVal(formData, ['university', 'University', 'uni', 'Uni', 'other_uni', 'other_uni_2']);
+      const university = getVal(submission, ['uni', 'university', 'University', 'Uni', 'other_uni', 'other_uni_2']);
       const resolvedLc = resolveLcFromUniversity(university);
       const lc = resolvedLc || submission.allocated_lc || 'Organic';
       return lc === 'Danang';
     });
     const danangFormsWithMatchingUtm = danangFormsWithUtmTerm.filter(submission => {
-      const formData = submission.form_data || {};
-      const utmTerm = getVal(formData, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) || 
-                     getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
+      const utmTerm = getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
       const registeredUtmLinks = utmLinksByLc['Danang'] || [];
       const isMatching = !!utmTerm && registeredUtmLinks.some(link =>
         String(utmTerm).toLowerCase().includes(String(link).toLowerCase())
@@ -504,9 +525,7 @@ export default function DashboardPage() {
     // Count UTM terms for Danang
     const danangUtmTerms = new Map<string, number>();
     danangFormsWithUtmTerm.forEach(submission => {
-      const formData = submission.form_data || {};
-      const utmTerm = getVal(formData, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) || 
-                     getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
+      const utmTerm = getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
       if (utmTerm) {
         danangUtmTerms.set(utmTerm, (danangUtmTerms.get(utmTerm) || 0) + 1);
       }
@@ -640,8 +659,7 @@ export default function DashboardPage() {
             }
           }
         } else if (termFilter) {
-          const years = new Set(termFilter.split(',').filter(Boolean));
-          const targetCodes = phasesMeta.filter(p => years.has(String(p.term))).map(p => p.code);
+          const targetCodes = phasesMeta.filter(p => String(p.term) === termFilter).map(p => p.code);
           if (targetCodes.length > 0) {
             const { data: goalRowsPhases } = await supabase
               .from('lc_goals_phase')
@@ -680,8 +698,7 @@ export default function DashboardPage() {
         if (!termFilter) return true;
         try {
           const y = new Date(s.timestamp).getUTCFullYear();
-          const set = new Set(termFilter.split(',').filter(Boolean));
-          return set.has(String(y));
+          return String(y) === termFilter;
         } catch { return true; }
       };
       const matchesPhase = (s: any) => {
@@ -699,14 +716,13 @@ export default function DashboardPage() {
       filtered.forEach((submission: any) => {
         // Use allocated_lc if available, otherwise try to map from uni
         let lc = submission.allocated_lc || 'Organic';
-        const form = submission?.form_data || {};
-        const utm_source = getVal(submission, ['utm_source']) || getVal(form, ['utm_source', 'utmSource']);
-        const utm_medium = getVal(submission, ['utm_medium']) || getVal(form, ['utm_medium', 'utmMedium']);
-        const utm_campaign = getVal(submission, ['utm_campaign']) || getVal(form, ['utm_campaign', 'utmCampaign']);
-        const utm_id = getVal(submission, ['utm_id']) || getVal(form, ['utm_id', 'utmId']);
-        const utm_content = getVal(submission, ['utm_content']) || getVal(form, ['utm_content', 'utmContent']);
-        const utm_name = getVal(submission, ['utm_name']) || getVal(form, ['utm_name', 'utmName']);
-        const utm_term = (getVal(submission, ['utm_term']) || getVal(form, ['utm_term', 'utmTerm'])).toString();
+        const utm_source = getVal(submission, ['utm_source']);
+        const utm_medium = getVal(submission, ['utm_medium']);
+        const utm_campaign = getVal(submission, ['utm_campaign']);
+        const utm_id = getVal(submission, ['utm_id']);
+        const utm_content = getVal(submission, ['utm_content']);
+        const utm_name = getVal(submission, ['utm_name']);
+        const utm_term = getVal(submission, ['utm_term']).toString();
         const hasAnyUtm = [utm_source, utm_medium, utm_campaign, utm_id, utm_content, utm_name, utm_term]
           .some(v => v && String(v).trim() !== '');
         // Check if UTM term matches registered EMT UTM links
@@ -747,7 +763,7 @@ export default function DashboardPage() {
         }
 
         // Build per-LC unique set by phone/email for MSU
-        const key = (submission.phone || form.phone || '') || (submission.email || form.email || '');
+        const key = (submission.phone || '') || (submission.email || '');
         if (!uniqueByLc.has(lc)) uniqueByLc.set(lc, new Map());
         if (key) uniqueByLc.get(lc)!.set(String(key), true);
 
@@ -899,9 +915,7 @@ export default function DashboardPage() {
         };
 
         compareSubs.forEach(submission => {
-          const formData = submission.form_data || {};
-          const utmTerm = getVal(formData, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']) || 
-                          getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
+          const utmTerm = getVal(submission, ['utm_term', 'utmTerm', 'UTM Term', 'utm term', 'term', 'Term']);
           if (utmTerm) {
             Object.entries(utmLinksByLc).forEach(([lcCode, links]) => {
               const isMatchingUtm = links.some(link => String(utmTerm).toLowerCase().includes(String(link).toLowerCase()));
@@ -922,9 +936,129 @@ export default function DashboardPage() {
     loadCompare();
   }, [comparePhaseFilter, phaseRanges, utmLinksByLc, phaseFilter]);
 
+  const loadLCInfo = async () => {
+    try {
+      // Get all LC codes from university_mapping
+      const { data: universityData, error: universityError } = await supabase
+        .from('university_mapping')
+        .select('lc_code')
+        .order('lc_code');
+
+      if (universityError) {
+        console.error('Error loading university mapping:', universityError);
+        return;
+      }
+
+      // Count universities per LC
+      const universitiesByLc: Record<string, number> = {};
+      if (universityData) {
+        universityData.forEach((item: any) => {
+          const lcCode = item.lc_code;
+          universitiesByLc[lcCode] = (universitiesByLc[lcCode] || 0) + 1;
+        });
+      }
+
+      // Get user counts per LC
+      const { data: profilesData, error: profilesError } = await supabase
+        .from('profiles')
+        .select('lc_code')
+        .not('lc_code', 'is', null);
+
+      if (profilesError) {
+        console.error('Error loading profiles:', profilesError);
+        return;
+      }
+
+      // Count users per LC
+      const usersByLc: Record<string, number> = {};
+      if (profilesData) {
+        profilesData.forEach((item: any) => {
+          const lcCode = item.lc_code;
+          if (lcCode) {
+            usersByLc[lcCode] = (usersByLc[lcCode] || 0) + 1;
+          }
+        });
+      }
+
+      // Get goals for current phase/term
+      let goalsByLc: Record<string, number> = {};
+      try {
+        if (phaseFilter) {
+          const codes = phaseFilter.split(',').filter(Boolean);
+          const { data: goalRowsPhase } = await supabase
+            .from('lc_goals_phase')
+            .select('lc_code, goal, phase_code')
+            .in('phase_code', codes as any);
+          if (goalRowsPhase) {
+            for (const r of goalRowsPhase as any[]) {
+              goalsByLc[String(r.lc_code)] = (goalsByLc[String(r.lc_code)] || 0) + (Number(r.goal) || 0);
+            }
+          }
+        } else if (termFilter) {
+          const years = new Set(termFilter.split(',').filter(Boolean));
+          const target = phasesMeta.filter(p => years.has(String(p.term))).map(p => p.code);
+          if (target.length > 0) {
+            const { data: goalRowsPhases } = await supabase
+              .from('lc_goals_phase')
+              .select('lc_code, goal, phase_code')
+              .in('phase_code', target as any);
+            if (goalRowsPhases) {
+              for (const r of goalRowsPhases as any[]) {
+                goalsByLc[String(r.lc_code)] = (goalsByLc[String(r.lc_code)] || 0) + (Number(r.goal) || 0);
+              }
+            }
+          }
+        } else {
+          // Default to latest term
+          const latestTerm = phasesMeta.reduce((max, p) => Math.max(max, Number(p.term) || 0), 0);
+          const latestCodes = phasesMeta.filter(p => Number(p.term) === latestTerm).map(p => p.code);
+          if (latestCodes.length > 0) {
+            const { data: goalRowsLatest } = await supabase
+              .from('lc_goals_phase')
+              .select('lc_code, goal, phase_code')
+              .in('phase_code', latestCodes as any);
+            if (goalRowsLatest) {
+              for (const r of goalRowsLatest as any[]) {
+                goalsByLc[String(r.lc_code)] = (goalsByLc[String(r.lc_code)] || 0) + (Number(r.goal) || 0);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error loading goals:', error);
+      }
+
+      // Combine all LC information
+      const allLcCodes = new Set([
+        ...Object.keys(universitiesByLc),
+        ...Object.keys(usersByLc),
+        ...Object.keys(goalsByLc),
+        'FHN', 'Hanoi', 'NEU', 'Danang', 'FHCMC', 'HCMC', 'HCME', 'HCMS', 'Cantho'
+      ]);
+
+      const lcInfoArray: LCInfo[] = Array.from(allLcCodes).map(lcCode => ({
+        lc_code: lcCode,
+        goal: goalsByLc[lcCode] || 0,
+        universities_count: universitiesByLc[lcCode] || 0,
+        users_count: usersByLc[lcCode] || 0
+      })).sort((a, b) => b.goal - a.goal);
+
+      setLcInfo(lcInfoArray);
+    } catch (error) {
+      console.error('Error loading LC info:', error);
+    }
+  };
+
+  // Load LC info when component mounts and when filters change
+  useEffect(() => {
+    if (user) {
+      loadLCInfo();
+    }
+  }, [user, phaseFilter, termFilter, phasesMeta]);
+
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-cover bg-center bg-no-repeat" style={{ backgroundImage: 'url(/bg.png)' }}>
+     <div className="min-h-screen flex items-center justify-center bg-cover bg-center bg-no-repeat" style={{ backgroundImage: 'url(/bg.png)' }}>
         <img src="/giphy.gif" alt="Loading..." className="h-50 w-50 object-contain" />
       </div>
     );
@@ -932,73 +1066,8 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-bl from-[#f3f4f6] to-[#e5e7eb]">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200">
-        <div className="flex items-center justify-between px-3 sm:px-4 py-3">
-          {/* Left side */}
-          <div className="flex items-center space-x-2 sm:space-x-3">
-            <button
-              onClick={() => window.dispatchEvent(new Event('sidebar:toggle'))}
-              className="p-2 rounded-md hover:bg-gray-100 text-gray-700"
-              aria-label="Toggle sidebar"
-            >
-              {/* simple menu icon */}
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M3.75 5.25a.75.75 0 01.75-.75h15a.75.75 0 010 1.5h-15a.75.75 0 01-.75-.75zm0 6a.75.75 0 01.75-.75h15a.75.75 0 010 1.5h-15a.75.75 0 01-.75-.75zm.75 5.25a.75.75 0 000 1.5h15a.75.75 0 000-1.5h-15z" clipRule="evenodd" /></svg>
-            </button>
-            <h1 className="text-lg sm:text-xl font-semibold text-gray-900 truncate">Overall Performance</h1>
-          </div>
-
-          {/* Right side */}
-          <div className="flex items-center space-x-2 sm:space-x-4">
-            <button className="p-2 rounded-md hover:bg-gray-100 text-gray-700 hidden sm:block">
-              <Search className="h-5 w-5" />
-            </button>
-            <button className="p-2 rounded-md hover:bg-gray-100 relative text-gray-700 hidden sm:block">
-              <Bell className="h-5 w-5" />
-              <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full"></span>
-            </button>
-            <div className="flex items-center space-x-2">
-              <div className="relative profile-dropdown">
-                <button 
-                  onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
-                  className="flex items-center space-x-2 p-2 rounded-md hover:bg-gray-100 transition-colors"
-                >
-              <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
-                <User className="h-4 w-4 text-gray-600" />
-              </div>
-              <span className="hidden lg:block text-sm font-medium text-gray-700 truncate max-w-32">
-                {user?.email}
-              </span>
-                  <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                
-                {profileDropdownOpen && (
-                  <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg border border-gray-200 z-50">
-                    <div className="py-1">
-                      <div className="px-4 py-2 text-sm text-gray-700 border-b border-gray-100">
-                        <div className="font-medium">{user?.email}</div>
-                        <div className="text-xs text-gray-500">Signed in</div>
-                      </div>
-                      <button
-                        onClick={handleSignOut}
-                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center space-x-2"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        <span>Sign Out</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </header>
-
       <div className="flex">
-        {/* Main content; shifted by global dashboard layout when sidebar open */}
+        {/* Main content */}
         <main className="flex-1 p-3 sm:p-4 md:p-6">
           {/* Filters: Term and Phase */}
           <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-3 sm:p-4 mb-4 sm:mb-6">
@@ -1006,15 +1075,16 @@ export default function DashboardPage() {
               
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Term (Year)</label>
-                <MultiSelect
+                <SingleSelect
                   label="Term"
                   options={Array.from(new Set(phaseRanges.map(p => {
                     if (p.start) return new Date(p.start).getUTCFullYear();
                     if (p.end) return new Date(p.end).getUTCFullYear();
                     return null;
                   }).filter(Boolean) as number[])).sort((a,b)=> b-a).map(y => ({ label: String(y), value: String(y) }))}
-                  selected={termFilter ? termFilter.split(',') : []}
-                  onChange={(vals) => setTermFilter(vals.join(','))}
+                  selected={termFilter}
+                  onChange={(val) => setTermFilter(val)}
+                  placeholder="Select a term"
                 />
               </div>
               <div>
@@ -1024,6 +1094,7 @@ export default function DashboardPage() {
                   options={phaseRanges.map(p => ({ label: p.code, value: p.code }))}
                   selected={phaseFilter ? phaseFilter.split(',') : []}
                   onChange={(vals) => setPhaseFilter(vals.join(','))}
+                  maxSelection={2}
                 />
               </div>
               <div className="sm:col-span-2 lg:col-span-1 flex items-center">
@@ -1429,7 +1500,7 @@ export default function DashboardPage() {
                   </div>
                   <span className="text-sm text-gray-600">1 hour ago</span>
                 </div>
-              </div>
+              </div>  
             </div>
           </div>
         </main>

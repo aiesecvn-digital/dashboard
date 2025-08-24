@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { getCurrentUser, supabase } from '@/lib/supabase';
 import MultiSelect from '@/components/MultiSelect';
+import SingleSelect from '@/components/SingleSelect';
 
 interface FormSubmission {
   id: string;
@@ -212,8 +213,7 @@ export default function AnalyticsPage() {
     if (!termFilter) return true;
     try {
         const y = new Date(s.timestamp).getUTCFullYear();
-      const set = new Set(termFilter.split(',').filter(Boolean));
-        return set.has(String(y));
+        return String(y) === termFilter;
       } catch { return true; }
     };
 
@@ -313,34 +313,16 @@ export default function AnalyticsPage() {
     return new Intl.NumberFormat('en-US').format(num);
   };
 
-     if (loading) {
-     return (
-      <div className="min-h-screen flex items-center justify-center bg-cover bg-center bg-no-repeat" style={{ backgroundImage: 'url(/bg.png)' }}>
-         <img src="/giphy.gif" alt="Loading..." className="h-50 w-50 object-contain" />
-       </div>
-     );
-   }
+  if (loading) {
+    return (
+     <div className="min-h-screen flex items-center justify-center bg-cover bg-center bg-no-repeat" style={{ backgroundImage: 'url(/bg.png)' }}>
+        <img src="/giphy.gif" alt="Loading..." className="h-50 w-50 object-contain" />
+      </div>
+    );
+  }
 
      return (
      <div className="min-h-screen bg-gradient-to-bl from-[#f3f4f6] to-[#e5e7eb]">
-       {/* Header */}
-      <header className="bg-white border-b border-gray-200">
-        <div className="flex items-center justify-between px-3 sm:px-4 py-3">
-           <div className="flex items-center space-x-2 sm:space-x-3">
-             <button
-              onClick={() => window.dispatchEvent(new Event('sidebar:toggle'))}
-              className="p-2 rounded-md hover:bg-gray-100 text-gray-700"
-              aria-label="Toggle sidebar"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                <path fillRule="evenodd" d="M3.75 5.25a.75.75 0 01.75-.75h15a.75.75 0 010 1.5h-15a.75.75 0 01-.75-.75zm0 6a.75.75 0 01.75-.75h15a.75.75 0 010 1.5h-15a.75.75 0 01-.75-.75zm.75 5.25a.75.75 0 000 1.5h15a.75.75 0 000-1.5h-15z" clipRule="evenodd" />
-              </svg>
-             </button>
-            <h1 className="text-lg sm:text-xl font-semibold text-gray-900 truncate">Analytics</h1>
-           </div>
-         </div>
-       </header>
-
       <div className="flex">
         <main className="flex-1 p-3 sm:p-4 md:p-6">
           {/* Filters */}
@@ -360,15 +342,16 @@ export default function AnalyticsPage() {
             </div>
               <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Term (Year)</label>
-              <MultiSelect
+              <SingleSelect
                 label="Term"
                   options={Array.from(new Set(phaseRanges.map(p => {
                     if (p.start) return new Date(p.start).getUTCFullYear();
                     if (p.end) return new Date(p.end).getUTCFullYear();
                     return null;
                   }).filter(Boolean) as number[])).sort((a,b)=> b-a).map(y => ({ label: String(y), value: String(y) }))}
-                selected={termFilter ? termFilter.split(',') : []}
-                onChange={(vals) => setTermFilter(vals.join(','))}
+                selected={termFilter}
+                onChange={(val) => setTermFilter(val)}
+                placeholder="Select a term"
               />
             </div>
               <div>
@@ -378,6 +361,7 @@ export default function AnalyticsPage() {
                 options={phaseRanges.map(p => ({ label: p.code, value: p.code }))}
                 selected={phaseFilter ? phaseFilter.split(',') : []}
                 onChange={(vals) => setPhaseFilter(vals.join(','))}
+                maxSelection={2}
               />
             </div>
               <div className="md:col-span-1 flex items-center">
